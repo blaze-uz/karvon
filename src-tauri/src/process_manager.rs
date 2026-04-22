@@ -1,0 +1,2232 @@
+use crate::{
+    health,
+    models::{
+        ApiError, ApiResponse, DashboardSummary, HealthStatus, Id, LogEntry, LogHistoryFilters,
+        LogLevel, PortBinding, ProcessDefinition, ProcessRuntimeState, ProcessStatus, Project,
+        ProjectDetail, ProjectStatus, RestartPolicyKind, RuntimeProcessRecord, StreamType,
+    },
+    state::AppState,
+    storage,
+};
+use chrono::Utc;
+use nix::{
+    errno::Errno,
+    sys::resource::{setrlimit, Resource},
+    sys::signal::{killpg, Signal},
+    unistd::Pid,
+};
+use std::{
+    collections::{HashMap, HashSet},
+    io::{Error, ErrorKind},
+    path::Path,
+    process::Stdio,
+    time::Duration,
+};
+use tauri::{AppHandle, Emitter};
+use tokio::{
+    io::{AsyncBufReadExt, BufReader},
+    process::Command,
+    time::{sleep, Instant},
+};
+
+pub async fn get_project_detail(
+    state: &AppState,
+    project_id: &str,
+) -> Result<ProjectDetail, ApiError> {
+    let config = state.config.read().await;
+    let project = config
+        .projects
+        .iter()
+        .find(|project| project.id == project_id)
+        .cloned()
+        .ok_or_else(|| ApiError::new("PROJECT_NOT_FOUND", "Project not found", false))?;
+    let processes: Vec<_> = config
+        .processes
+        .iter()
+        .filter(|process| process.project_id == project_id)
+        .cloned()
+        .collect();
+    drop(config);
+    let states_guard = state.runtime.states.read().await;
+    let runtime_states: Vec<_> = processes
+        .iter()
+        .map(|process| {
+            states_guard
+                .get(&process.id)
+                .cloned()
+                .unwrap_or_else(|| ProcessRuntimeState::stopped(process.id.clone()))
+        })
+        .collect();
+    drop(states_guard);
+    let logs = state.runtime.logs.read().await;
+    let recent_logs = logs
+        .iter()
+        .filter(|log| log.project_id == project_id)
+        .rev()
+        .take(250)
+        .cloned()
+        .collect::<Vec<_>>();
+    Ok(ProjectDetail {
+        project,
+        processes,
+        status: derive_project_status(&runtime_states),
+        runtime_states,
+        recent_logs,
+    })
+}
+
+pub async fn start_process(
+    app: AppHandle,
+    state: AppState,
+    process_id: Id,
+) -> ApiResponse<ProcessRuntimeState> {
+    match start_process_inner(app, state, process_id).await {
+        Ok(runtime) => ApiResponse::ok(runtime),
+        Err(error) => ApiResponse::err(error),
+    }
+}
+
+async fn start_process_inner(
+    app: AppHandle,
+    state: AppState,
+    process_id: Id,
+) -> Result<ProcessRuntimeState, ApiError> {
+    let (project, process, settings) = {
+        let config = state.config.read().await;
+        let process = config
+            .processes
+            .iter()
+            .find(|process| process.id == process_id)
+            .cloned()
+            .ok_or_else(|| ApiError::new("PROCESS_NOT_FOUND", "Process not found", false))?;
+        let project = config
+            .projects
+            .iter()
+            .find(|project| project.id == process.project_id)
+            .cloned()
+            .ok_or_else(|| ApiError::new("PROJECT_NOT_FOUND", "Project not found", false))?;
+        (project, process, config.settings.clone())
+    };
+
+    let existing = state.runtime.states.read().await.get(&process_id).cloned();
+    if matches!(
+        existing.map(|state| state.current_status),
+        Some(
+            ProcessStatus::Running
+                | ProcessStatus::Starting
+                | ProcessStatus::Queued
+                | ProcessStatus::Stopping
+        )
+    ) {
+        return Err(ApiError::new(
+            "PROCESS_ALREADY_RUNNING",
+            "Process is already running or stopping",
+            false,
+        ));
+    }
+    clear_stop_requests_for_process(&state, &process_id).await;
+
+    if let Some(missing) = missing_dependency(&state, &process).await {
+        let mut runtime = ProcessRuntimeState::stopped(process.id.clone());
+        runtime.current_status = ProcessStatus::WaitingDependency;
+        runtime.last_error = Some(format!("Dependency is not running: {missing}"));
+        set_runtime(&app, &state, runtime.clone(), "process_failed").await;
+        append_log(
+            &app,
+            &state,
+            &process,
+            StreamType::System,
+            LogLevel::Warn,
+            format!("Blocked by dependency {missing}"),
+        )
+        .await;
+        return Ok(runtime);
+    }
+
+    let cwd = resolve_working_directory(&project, &process)?;
+    let mut runtime = state
+        .runtime
+        .states
+        .read()
+        .await
+        .get(&process_id)
+        .cloned()
+        .unwrap_or_else(|| ProcessRuntimeState::stopped(process.id.clone()));
+    runtime.current_status = ProcessStatus::Starting;
+    runtime.started_at = Some(Utc::now());
+    runtime.stopped_at = None;
+    runtime.exit_code = None;
+    runtime.last_error = None;
+    runtime.memory_usage = None;
+    runtime.health_status = Some(HealthStatus::Starting);
+    runtime.port_bindings = detect_process_ports(&process);
+    set_runtime(&app, &state, runtime.clone(), "process_started").await;
+    append_log(
+        &app,
+        &state,
+        &process,
+        StreamType::System,
+        LogLevel::Info,
+        "Starting process",
+    )
+    .await;
+
+    let command_tokens = process_command_tokens(&process)?;
+    let command_label = display_command(&command_tokens);
+    let mut command = direct_process_command(&command_tokens);
+    configure_process_command(&mut command, &cwd, &process.env, process.memory_limit_mb);
+
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            let mut shell_command = shell_process_command(&command_tokens);
+            configure_process_command(
+                &mut shell_command,
+                &cwd,
+                &process.env,
+                process.memory_limit_mb,
+            );
+            match shell_command.spawn() {
+                Ok(child) => {
+                    append_log(
+                        &app,
+                        &state,
+                        &process,
+                        StreamType::System,
+                        LogLevel::Debug,
+                        "Resolved command through login shell",
+                    )
+                    .await;
+                    child
+                }
+                Err(shell_error) => {
+                    let details = format!(
+                        "{command_label}: {shell_error}. Direct launch also failed: {error}"
+                    );
+                    mark_spawn_failure(&app, &state, &process, &mut runtime, details.clone()).await;
+                    return Err(ApiError::with_details(
+                        "COMMAND_EXECUTION_FAILED",
+                        "Unable to execute process command",
+                        details,
+                        true,
+                    ));
+                }
+            }
+        }
+        Err(error) => {
+            let details = format!("{command_label}: {error}");
+            mark_spawn_failure(&app, &state, &process, &mut runtime, details.clone()).await;
+            return Err(ApiError::with_details(
+                "COMMAND_EXECUTION_FAILED",
+                "Unable to execute process command",
+                details,
+                true,
+            ));
+        }
+    };
+
+    let pid = child.id();
+    if let Some(pid) = pid {
+        let record = RuntimeProcessRecord {
+            process_id: process.id.clone(),
+            project_id: process.project_id.clone(),
+            pid,
+            process_group_id: pid,
+            started_at: runtime.started_at.clone().unwrap_or_else(Utc::now),
+            command: command_label.clone(),
+        };
+        track_runtime_process(&state, record).await;
+        let _ = persist_runtime_processes(&app, &state).await;
+    }
+
+    runtime.pid = pid;
+    runtime.current_status = ProcessStatus::Running;
+    runtime.health_status = Some(HealthStatus::Unknown);
+    set_runtime(&app, &state, runtime.clone(), "process_started").await;
+    append_log(
+        &app,
+        &state,
+        &process,
+        StreamType::System,
+        LogLevel::Info,
+        format!(
+            "Process running{}{}",
+            pid.map(|pid| format!(" with pid {pid}"))
+                .unwrap_or_default(),
+            process
+                .memory_limit_mb
+                .map(|limit| format!(" (RAM limit {limit} MB)"))
+                .unwrap_or_default()
+        ),
+    )
+    .await;
+
+    if let Some(pid) = pid {
+        spawn_memory_monitor(
+            app.clone(),
+            state.clone(),
+            process.project_id.clone(),
+            process.id.clone(),
+            pid,
+        );
+    }
+
+    if let Some(stdout) = child.stdout.take() {
+        spawn_log_reader(
+            app.clone(),
+            state.clone(),
+            process.clone(),
+            StreamType::Stdout,
+            stdout,
+        );
+    }
+    if let Some(stderr) = child.stderr.take() {
+        spawn_log_reader(
+            app.clone(),
+            state.clone(),
+            process.clone(),
+            StreamType::Stderr,
+            stderr,
+        );
+    }
+
+    let wait_app = app.clone();
+    let wait_state = state.clone();
+    let wait_process = process.clone();
+    let wait_process_group_id = pid;
+    tauri::async_runtime::spawn(async move {
+        let status = child.wait().await;
+        if let Some(process_group_id) = wait_process_group_id {
+            let stop_timeout_ms = wait_state.config.read().await.settings.stop_timeout_ms;
+            terminate_process_group_gracefully(process_group_id, stop_timeout_ms).await;
+        }
+        let recovered_pid = match wait_process_group_id {
+            Some(process_group_id) => live_process_in_group(process_group_id).await,
+            None => None,
+        };
+        let stop_requested = match wait_process_group_id {
+            Some(process_group_id) => {
+                stop_was_requested(&wait_state, &wait_process.id, process_group_id).await
+            }
+            None => false,
+        };
+        let mut runtime = wait_state
+            .runtime
+            .states
+            .read()
+            .await
+            .get(&wait_process.id)
+            .cloned()
+            .unwrap_or_else(|| ProcessRuntimeState::stopped(wait_process.id.clone()));
+        runtime.stopped_at = Some(Utc::now());
+        runtime.exit_code = status.as_ref().ok().and_then(|status| status.code());
+        runtime.health_status = Some(HealthStatus::Unknown);
+
+        if let (Some(process_group_id), Some(live_pid)) = (wait_process_group_id, recovered_pid) {
+            if update_tracked_process_pid(&wait_state, &wait_process.id, live_pid, process_group_id)
+                .await
+            {
+                runtime.pid = Some(live_pid);
+                runtime.stopped_at = None;
+                runtime.exit_code = None;
+                runtime.current_status = ProcessStatus::Running;
+                runtime.last_error = Some(
+                    "Parent process exited but child process group is still running".to_string(),
+                );
+                let _ = persist_runtime_processes(&wait_app, &wait_state).await;
+                append_log(
+                    &wait_app,
+                    &wait_state,
+                    &wait_process,
+                    StreamType::System,
+                    LogLevel::Warn,
+                    format!("Parent exited; recovered running process group {process_group_id}"),
+                )
+                .await;
+                set_runtime(&wait_app, &wait_state, runtime, "process_started").await;
+            }
+            clear_stop_requested(&wait_state, &wait_process.id, process_group_id).await;
+            return;
+        }
+
+        runtime.pid = None;
+        if let Some(process_group_id) = wait_process_group_id {
+            let current_group = current_tracked_process_group(&wait_state, &wait_process.id).await;
+            if let Some(current_group) = current_group {
+                if current_group != process_group_id {
+                    clear_stop_requested(&wait_state, &wait_process.id, process_group_id).await;
+                    return;
+                }
+                if untrack_runtime_process_if_group(&wait_state, &wait_process.id, process_group_id)
+                    .await
+                {
+                    let _ = persist_runtime_processes(&wait_app, &wait_state).await;
+                }
+            } else if stop_requested
+                || matches!(
+                    runtime.current_status,
+                    ProcessStatus::Stopping | ProcessStatus::Stopped
+                )
+            {
+                clear_stop_requested(&wait_state, &wait_process.id, process_group_id).await;
+                return;
+            }
+            clear_stop_requested(&wait_state, &wait_process.id, process_group_id).await;
+        }
+
+        match status {
+            Ok(_exit_status) if matches!(runtime.current_status, ProcessStatus::Failed) => {
+                append_log(
+                    &wait_app,
+                    &wait_state,
+                    &wait_process,
+                    StreamType::System,
+                    LogLevel::Warn,
+                    "Process stopped after failure",
+                )
+                .await;
+                set_runtime(&wait_app, &wait_state, runtime, "process_failed").await;
+            }
+            Ok(exit_status)
+                if exit_status.success()
+                    || stop_requested
+                    || matches!(runtime.current_status, ProcessStatus::Stopping) =>
+            {
+                runtime.current_status = ProcessStatus::Stopped;
+                runtime.exit_code = None;
+                runtime.last_error = None;
+                runtime.memory_usage = None;
+                append_log(
+                    &wait_app,
+                    &wait_state,
+                    &wait_process,
+                    StreamType::System,
+                    LogLevel::Info,
+                    "Process stopped",
+                )
+                .await;
+                set_runtime(&wait_app, &wait_state, runtime, "process_stopped").await;
+            }
+            Ok(exit_status) => {
+                runtime.current_status = ProcessStatus::Crashed;
+                if runtime.last_error.is_none() {
+                    runtime.last_error = Some(format!("Exited with status {exit_status}"));
+                }
+                append_log(
+                    &wait_app,
+                    &wait_state,
+                    &wait_process,
+                    StreamType::System,
+                    LogLevel::Error,
+                    format!("Process crashed: {exit_status}"),
+                )
+                .await;
+                maybe_log_restart_policy(&wait_app, &wait_state, &wait_process, &runtime).await;
+                set_runtime(&wait_app, &wait_state, runtime, "process_failed").await;
+            }
+            Err(error) => {
+                runtime.current_status = ProcessStatus::Failed;
+                runtime.last_error = Some(error.to_string());
+                append_log(
+                    &wait_app,
+                    &wait_state,
+                    &wait_process,
+                    StreamType::System,
+                    LogLevel::Error,
+                    format!("Process wait failed: {error}"),
+                )
+                .await;
+                set_runtime(&wait_app, &wait_state, runtime, "process_failed").await;
+            }
+        }
+    });
+
+    if settings.auto_start_marked_projects {
+        append_log(
+            &app,
+            &state,
+            &process,
+            StreamType::System,
+            LogLevel::Debug,
+            "Autostart setting is enabled",
+        )
+        .await;
+    }
+
+    Ok(runtime)
+}
+
+pub async fn stop_process(
+    app: AppHandle,
+    state: AppState,
+    process_id: Id,
+) -> ApiResponse<ProcessRuntimeState> {
+    match stop_process_inner(app, state, process_id).await {
+        Ok(runtime) => ApiResponse::ok(runtime),
+        Err(error) => ApiResponse::err(error),
+    }
+}
+
+async fn stop_process_inner(
+    app: AppHandle,
+    state: AppState,
+    process_id: Id,
+) -> Result<ProcessRuntimeState, ApiError> {
+    let process = {
+        let config = state.config.read().await;
+        config
+            .processes
+            .iter()
+            .find(|process| process.id == process_id)
+            .cloned()
+            .ok_or_else(|| ApiError::new("PROCESS_NOT_FOUND", "Process not found", false))?
+    };
+    let stop_timeout_ms = state.config.read().await.settings.stop_timeout_ms;
+    let mut runtime = state
+        .runtime
+        .states
+        .read()
+        .await
+        .get(&process_id)
+        .cloned()
+        .unwrap_or_else(|| ProcessRuntimeState::stopped(process.id.clone()));
+
+    let Some(pid) = state
+        .runtime
+        .pids
+        .read()
+        .await
+        .get(&process_id)
+        .copied()
+        .or(runtime.pid)
+    else {
+        runtime.current_status = ProcessStatus::Stopped;
+        runtime.stopped_at = Some(Utc::now());
+        runtime.memory_usage = None;
+        set_runtime(&app, &state, runtime.clone(), "process_stopped").await;
+        return Ok(runtime);
+    };
+
+    mark_stop_requested(&state, &process_id, pid).await;
+    runtime.current_status = ProcessStatus::Stopping;
+    set_runtime(&app, &state, runtime.clone(), "process_stopped").await;
+    append_log(
+        &app,
+        &state,
+        &process,
+        StreamType::System,
+        LogLevel::Info,
+        format!("Sending SIGTERM to process group {pid}"),
+    )
+    .await;
+
+    match signal_process_group(pid, Signal::SIGTERM) {
+        Ok(()) => {}
+        Err(Errno::ESRCH) => {
+            runtime.current_status = ProcessStatus::Stopped;
+            runtime.stopped_at = Some(Utc::now());
+            runtime.pid = None;
+            runtime.memory_usage = None;
+            if untrack_runtime_process_if_group(&state, &process_id, pid).await {
+                let _ = persist_runtime_processes(&app, &state).await;
+            }
+            clear_stop_requested(&state, &process_id, pid).await;
+            set_runtime(&app, &state, runtime.clone(), "process_stopped").await;
+            return Ok(runtime);
+        }
+        Err(error) => {
+            return Err(ApiError::with_details(
+                "COMMAND_EXECUTION_FAILED",
+                "Unable to terminate process group",
+                error,
+                true,
+            ));
+        }
+    }
+
+    let force_app = app.clone();
+    let force_state = state.clone();
+    let force_process = process.clone();
+    let force_process_group_id = pid;
+    tauri::async_runtime::spawn(async move {
+        sleep(Duration::from_millis(stop_timeout_ms)).await;
+        if process_group_exists(force_process_group_id) {
+            append_log(
+                &force_app,
+                &force_state,
+                &force_process,
+                StreamType::System,
+                LogLevel::Warn,
+                format!("Force killing process group {force_process_group_id}"),
+            )
+            .await;
+            let _ = force_kill_process_group(force_process_group_id);
+        }
+        sleep(Duration::from_millis(200)).await;
+        if let Some(live_pid) = live_process_in_group(force_process_group_id).await {
+            if update_tracked_process_pid(
+                &force_state,
+                &force_process.id,
+                live_pid,
+                force_process_group_id,
+            )
+            .await
+            {
+                let _ = persist_runtime_processes(&force_app, &force_state).await;
+                let mut runtime = force_state
+                    .runtime
+                    .states
+                    .read()
+                    .await
+                    .get(&force_process.id)
+                    .cloned()
+                    .unwrap_or_else(|| ProcessRuntimeState::stopped(force_process.id.clone()));
+                runtime.pid = Some(live_pid);
+                runtime.current_status = ProcessStatus::Running;
+                runtime.stopped_at = None;
+                runtime.last_error = Some("Process group survived forced stop".to_string());
+                set_runtime(&force_app, &force_state, runtime, "process_failed").await;
+            }
+        } else if untrack_runtime_process_if_group(
+            &force_state,
+            &force_process.id,
+            force_process_group_id,
+        )
+        .await
+        {
+            let _ = persist_runtime_processes(&force_app, &force_state).await;
+            let mut runtime = force_state
+                .runtime
+                .states
+                .read()
+                .await
+                .get(&force_process.id)
+                .cloned()
+                .unwrap_or_else(|| ProcessRuntimeState::stopped(force_process.id.clone()));
+            runtime.pid = None;
+            runtime.current_status = ProcessStatus::Stopped;
+            runtime.stopped_at = Some(Utc::now());
+            runtime.memory_usage = None;
+            runtime.last_error = None;
+            set_runtime(&force_app, &force_state, runtime, "process_stopped").await;
+        }
+        clear_stop_requested(&force_state, &force_process.id, force_process_group_id).await;
+    });
+
+    Ok(runtime)
+}
+
+pub async fn recover_tracked_processes(app: AppHandle, state: AppState) {
+    let processes_by_id: HashMap<Id, ProcessDefinition> = state
+        .config
+        .read()
+        .await
+        .processes
+        .iter()
+        .map(|process| (process.id.clone(), process.clone()))
+        .collect();
+    let records = state.runtime.process_records.read().await.clone();
+    if records.is_empty() {
+        return;
+    }
+
+    let mut recovered_records = HashMap::new();
+    for (process_id, record) in records {
+        let Some(process) = processes_by_id.get(&process_id) else {
+            continue;
+        };
+        let process_group_id = normalized_process_group_id(&record);
+        let live_pid = live_pid_for_record(&record).await;
+        match live_pid {
+            Some(live_pid) => {
+                let mut next_record = record.clone();
+                next_record.process_id = process_id.clone();
+                next_record.project_id = process.project_id.clone();
+                next_record.pid = live_pid;
+                next_record.process_group_id = process_group_id;
+                if next_record.command.trim().is_empty() {
+                    next_record.command = process.command.clone();
+                }
+                recovered_records.insert(process_id.clone(), next_record.clone());
+                track_runtime_process(&state, next_record.clone()).await;
+
+                let mut runtime = state
+                    .runtime
+                    .states
+                    .read()
+                    .await
+                    .get(&process_id)
+                    .cloned()
+                    .unwrap_or_else(|| ProcessRuntimeState::stopped(process_id.clone()));
+                runtime.pid = Some(live_pid);
+                runtime.started_at = Some(next_record.started_at);
+                runtime.stopped_at = None;
+                runtime.exit_code = None;
+                runtime.last_error = None;
+                runtime.memory_usage = None;
+                runtime.health_status = Some(HealthStatus::Unknown);
+                runtime.port_bindings = detect_process_ports(process);
+                runtime.current_status = ProcessStatus::Running;
+                set_runtime(&app, &state, runtime, "process_started").await;
+                append_log(
+                    &app,
+                    &state,
+                    process,
+                    StreamType::System,
+                    LogLevel::Info,
+                    format!("Recovered running process group {process_group_id}"),
+                )
+                .await;
+                spawn_memory_monitor(
+                    app.clone(),
+                    state.clone(),
+                    process.project_id.clone(),
+                    process_id.clone(),
+                    live_pid,
+                );
+            }
+            None => {
+                let mut runtime = ProcessRuntimeState::stopped(process_id.clone());
+                runtime.stopped_at = Some(Utc::now());
+                set_runtime(&app, &state, runtime, "process_stopped").await;
+                append_log(
+                    &app,
+                    &state,
+                    process,
+                    StreamType::System,
+                    LogLevel::Info,
+                    format!("Previous process group {process_group_id} is no longer running"),
+                )
+                .await;
+            }
+        }
+    }
+
+    replace_runtime_process_records(&state, recovered_records).await;
+    let _ = persist_runtime_processes(&app, &state).await;
+}
+
+pub async fn shutdown_tracked_processes(app: AppHandle, state: AppState) {
+    let stop_timeout_ms = state.config.read().await.settings.stop_timeout_ms;
+    let records = state.runtime.process_records.read().await.clone();
+    if records.is_empty() {
+        return;
+    }
+    let tracked_process_ids: HashSet<Id> = records.keys().cloned().collect();
+    let process_group_ids: HashSet<u32> =
+        records.values().map(normalized_process_group_id).collect();
+
+    for process_group_id in &process_group_ids {
+        let _ = signal_process_group(*process_group_id, Signal::SIGTERM);
+    }
+
+    sleep(Duration::from_millis(stop_timeout_ms)).await;
+
+    for process_group_id in &process_group_ids {
+        if process_group_exists(*process_group_id) {
+            let _ = force_kill_process_group(*process_group_id);
+        }
+    }
+    sleep(Duration::from_millis(200)).await;
+
+    let mut surviving_records = HashMap::new();
+    for (process_id, mut record) in records {
+        let process_group_id = normalized_process_group_id(&record);
+        if let Some(live_pid) = live_process_in_group(process_group_id).await {
+            record.pid = live_pid;
+            record.process_group_id = process_group_id;
+            surviving_records.insert(process_id, record);
+        }
+    }
+
+    replace_runtime_process_records(&state, surviving_records.clone()).await;
+    let _ = persist_runtime_processes(&app, &state).await;
+    let now = Utc::now();
+    let mut states = state.runtime.states.write().await;
+    for runtime in states.values_mut() {
+        if let Some(record) = surviving_records.get(&runtime.process_id) {
+            runtime.pid = Some(record.pid);
+            runtime.current_status = ProcessStatus::Running;
+            runtime.stopped_at = None;
+        } else if tracked_process_ids.contains(&runtime.process_id) {
+            runtime.pid = None;
+            runtime.current_status = ProcessStatus::Stopped;
+            runtime.stopped_at = Some(now);
+            runtime.memory_usage = None;
+        }
+    }
+}
+
+async fn track_runtime_process(state: &AppState, record: RuntimeProcessRecord) {
+    state
+        .runtime
+        .pids
+        .write()
+        .await
+        .insert(record.process_id.clone(), record.process_group_id);
+    state
+        .runtime
+        .process_records
+        .write()
+        .await
+        .insert(record.process_id.clone(), record);
+}
+
+async fn update_tracked_process_pid(
+    state: &AppState,
+    process_id: &str,
+    pid: u32,
+    process_group_id: u32,
+) -> bool {
+    let updated = if let Some(record) = state
+        .runtime
+        .process_records
+        .write()
+        .await
+        .get_mut(process_id)
+    {
+        if normalized_process_group_id(record) == process_group_id {
+            record.pid = pid;
+            record.process_group_id = process_group_id;
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+    if updated {
+        state
+            .runtime
+            .pids
+            .write()
+            .await
+            .insert(process_id.to_string(), process_group_id);
+    }
+    updated
+}
+
+async fn untrack_runtime_process(state: &AppState, process_id: &str) {
+    state.runtime.pids.write().await.remove(process_id);
+    state
+        .runtime
+        .process_records
+        .write()
+        .await
+        .remove(process_id);
+}
+
+async fn current_tracked_process_group(state: &AppState, process_id: &str) -> Option<u32> {
+    state
+        .runtime
+        .process_records
+        .read()
+        .await
+        .get(process_id)
+        .map(normalized_process_group_id)
+}
+
+async fn untrack_runtime_process_if_group(
+    state: &AppState,
+    process_id: &str,
+    process_group_id: u32,
+) -> bool {
+    let removed = {
+        let mut records = state.runtime.process_records.write().await;
+        match records.get(process_id).map(normalized_process_group_id) {
+            Some(current_group_id) if current_group_id == process_group_id => {
+                records.remove(process_id);
+                true
+            }
+            _ => false,
+        }
+    };
+
+    if removed {
+        let mut pids = state.runtime.pids.write().await;
+        if pids.get(process_id).copied() == Some(process_group_id) {
+            pids.remove(process_id);
+        }
+    }
+
+    removed
+}
+
+async fn replace_runtime_process_records(
+    state: &AppState,
+    records: HashMap<Id, RuntimeProcessRecord>,
+) {
+    let pids = records
+        .iter()
+        .map(|(process_id, record)| (process_id.clone(), normalized_process_group_id(record)))
+        .collect();
+    *state.runtime.pids.write().await = pids;
+    *state.runtime.process_records.write().await = records;
+}
+
+async fn persist_runtime_processes(app: &AppHandle, state: &AppState) -> Result<(), ApiError> {
+    let records = state.runtime.process_records.read().await.clone();
+    storage::save_runtime_processes(app, &records)
+}
+
+fn normalized_process_group_id(record: &RuntimeProcessRecord) -> u32 {
+    if record.process_group_id == 0 {
+        record.pid
+    } else {
+        record.process_group_id
+    }
+}
+
+fn stop_request_key(process_id: &str, process_group_id: u32) -> String {
+    format!("{process_id}:{process_group_id}")
+}
+
+async fn mark_stop_requested(state: &AppState, process_id: &str, process_group_id: u32) {
+    state
+        .runtime
+        .stopping_processes
+        .write()
+        .await
+        .insert(stop_request_key(process_id, process_group_id));
+}
+
+async fn stop_was_requested(state: &AppState, process_id: &str, process_group_id: u32) -> bool {
+    state
+        .runtime
+        .stopping_processes
+        .read()
+        .await
+        .contains(&stop_request_key(process_id, process_group_id))
+}
+
+async fn clear_stop_requested(state: &AppState, process_id: &str, process_group_id: u32) {
+    state
+        .runtime
+        .stopping_processes
+        .write()
+        .await
+        .remove(&stop_request_key(process_id, process_group_id));
+}
+
+async fn clear_stop_requests_for_process(state: &AppState, process_id: &str) {
+    let prefix = format!("{process_id}:");
+    state
+        .runtime
+        .stopping_processes
+        .write()
+        .await
+        .retain(|key| !key.starts_with(&prefix));
+}
+
+async fn terminate_process_group_gracefully(process_group_id: u32, stop_timeout_ms: u64) {
+    let should_wait = match signal_process_group(process_group_id, Signal::SIGTERM) {
+        Ok(()) => true,
+        Err(Errno::ESRCH) => false,
+        Err(_) => true,
+    };
+    if !should_wait {
+        return;
+    }
+
+    sleep(Duration::from_millis(stop_timeout_ms)).await;
+    if process_group_exists(process_group_id) {
+        let _ = force_kill_process_group(process_group_id);
+    }
+}
+
+fn signal_process_group(process_group_id: u32, signal: Signal) -> Result<(), Errno> {
+    killpg(Pid::from_raw(process_group_id as i32), signal)
+}
+
+fn force_kill_process_group(process_group_id: u32) -> Result<(), Errno> {
+    signal_process_group(process_group_id, Signal::SIGKILL)
+}
+
+fn process_group_exists(process_group_id: u32) -> bool {
+    match killpg(Pid::from_raw(process_group_id as i32), None::<Signal>) {
+        Ok(()) => true,
+        Err(Errno::ESRCH) => false,
+        Err(_) => true,
+    }
+}
+
+async fn live_pid_for_record(record: &RuntimeProcessRecord) -> Option<u32> {
+    let process_group_id = normalized_process_group_id(record);
+    if process_is_live_in_group(record.pid, process_group_id).await {
+        Some(record.pid)
+    } else {
+        live_process_in_group(process_group_id).await
+    }
+}
+
+async fn process_is_live_in_group(pid: u32, process_group_id: u32) -> bool {
+    process_info_for_pid(pid)
+        .await
+        .map(|(found_process_group_id, stat)| {
+            found_process_group_id == process_group_id && is_live_process_stat(&stat)
+        })
+        .unwrap_or(false)
+}
+
+async fn process_info_for_pid(pid: u32) -> Option<(u32, String)> {
+    let output = Command::new("ps")
+        .arg("-o")
+        .arg("pgid=")
+        .arg("-o")
+        .arg("stat=")
+        .arg("-p")
+        .arg(pid.to_string())
+        .stderr(Stdio::null())
+        .output()
+        .await
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let output = String::from_utf8_lossy(&output.stdout);
+    let mut parts = output.split_whitespace();
+    let process_group_id = parts.next()?.parse::<u32>().ok()?;
+    let stat = parts.next()?.to_string();
+    Some((process_group_id, stat))
+}
+
+async fn live_process_in_group(process_group_id: u32) -> Option<u32> {
+    let output = Command::new("ps")
+        .arg("-ax")
+        .arg("-o")
+        .arg("pid=")
+        .arg("-o")
+        .arg("pgid=")
+        .arg("-o")
+        .arg("stat=")
+        .stderr(Stdio::null())
+        .output()
+        .await
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(parse_process_group_row)
+        .find_map(|(pid, found_process_group_id, stat)| {
+            if found_process_group_id == process_group_id && is_live_process_stat(&stat) {
+                Some(pid)
+            } else {
+                None
+            }
+        })
+}
+
+fn parse_process_group_row(line: &str) -> Option<(u32, u32, String)> {
+    let mut parts = line.split_whitespace();
+    let pid = parts.next()?.parse::<u32>().ok()?;
+    let process_group_id = parts.next()?.parse::<u32>().ok()?;
+    let stat = parts.next()?.to_string();
+    Some((pid, process_group_id, stat))
+}
+
+fn is_live_process_stat(stat: &str) -> bool {
+    !stat.contains('Z')
+}
+
+pub async fn restart_process(
+    app: AppHandle,
+    state: AppState,
+    process_id: Id,
+) -> ApiResponse<ProcessRuntimeState> {
+    let existing = state.runtime.states.read().await.get(&process_id).cloned();
+    if matches!(
+        existing.map(|state| state.current_status),
+        Some(ProcessStatus::Running | ProcessStatus::Starting | ProcessStatus::Stopping)
+    ) {
+        let response = stop_process(app.clone(), state.clone(), process_id.clone()).await;
+        if !response.success {
+            return response;
+        }
+        let stop_timeout_ms = state.config.read().await.settings.stop_timeout_ms;
+        wait_for_processes_to_stop(&state, &[process_id.clone()], stop_timeout_ms).await;
+    }
+    {
+        let mut states = state.runtime.states.write().await;
+        let runtime = states
+            .entry(process_id.clone())
+            .or_insert_with(|| ProcessRuntimeState::stopped(process_id.clone()));
+        runtime.restart_count += 1;
+    }
+    start_process(app, state, process_id).await
+}
+
+async fn wait_for_processes_to_stop(state: &AppState, process_ids: &[Id], stop_timeout_ms: u64) {
+    let deadline = Instant::now() + Duration::from_millis(stop_timeout_ms.saturating_add(1_000));
+    loop {
+        let still_stopping = {
+            let states = state.runtime.states.read().await;
+            process_ids.iter().any(|process_id| {
+                states
+                    .get(process_id)
+                    .map(|runtime| {
+                        matches!(
+                            runtime.current_status,
+                            ProcessStatus::Running
+                                | ProcessStatus::Starting
+                                | ProcessStatus::Queued
+                                | ProcessStatus::Stopping
+                        )
+                    })
+                    .unwrap_or(false)
+            })
+        };
+        if !still_stopping || Instant::now() >= deadline {
+            break;
+        }
+        sleep(Duration::from_millis(100)).await;
+    }
+}
+
+pub async fn start_project(
+    app: AppHandle,
+    state: AppState,
+    project_id: Id,
+) -> ApiResponse<ProjectDetail> {
+    let processes = ordered_processes(&state, &project_id).await;
+    for process in processes
+        .into_iter()
+        .filter(|process| process.auto_start || process.visible)
+    {
+        let response = start_process(app.clone(), state.clone(), process.id.clone()).await;
+        if !response.success {
+            return ApiResponse::err(response.error.unwrap_or_else(|| {
+                ApiError::new(
+                    "COMMAND_EXECUTION_FAILED",
+                    "Unable to start project process",
+                    true,
+                )
+            }));
+        }
+        if let Some(delay) = process.startup_delay_ms {
+            sleep(Duration::from_millis(delay)).await;
+        }
+    }
+    match get_project_detail(&state, &project_id).await {
+        Ok(detail) => ApiResponse::ok(detail),
+        Err(error) => ApiResponse::err(error),
+    }
+}
+
+pub async fn stop_project(
+    app: AppHandle,
+    state: AppState,
+    project_id: Id,
+) -> ApiResponse<ProjectDetail> {
+    let mut processes = ordered_processes(&state, &project_id).await;
+    processes.reverse();
+    for process in processes {
+        let _ = stop_process(app.clone(), state.clone(), process.id).await;
+    }
+    match get_project_detail(&state, &project_id).await {
+        Ok(detail) => ApiResponse::ok(detail),
+        Err(error) => ApiResponse::err(error),
+    }
+}
+
+pub async fn restart_project(
+    app: AppHandle,
+    state: AppState,
+    project_id: Id,
+) -> ApiResponse<ProjectDetail> {
+    let process_ids: Vec<Id> = ordered_processes(&state, &project_id)
+        .await
+        .into_iter()
+        .map(|process| process.id)
+        .collect();
+    let stopped = stop_project(app.clone(), state.clone(), project_id.clone()).await;
+    if !stopped.success {
+        return stopped;
+    }
+    let stop_timeout_ms = state.config.read().await.settings.stop_timeout_ms;
+    wait_for_processes_to_stop(&state, &process_ids, stop_timeout_ms).await;
+    start_project(app, state, project_id).await
+}
+
+pub async fn restart_failed_processes(
+    app: AppHandle,
+    state: AppState,
+    project_id: Option<Id>,
+) -> ApiResponse<Vec<ProcessRuntimeState>> {
+    let failed_processes: Vec<ProcessDefinition> = {
+        let config = state.config.read().await;
+        let states = state.runtime.states.read().await;
+        config
+            .processes
+            .iter()
+            .filter(|process| {
+                project_id
+                    .as_ref()
+                    .map(|id| &process.project_id == id)
+                    .unwrap_or(true)
+            })
+            .filter(|process| {
+                states
+                    .get(&process.id)
+                    .map(|runtime| {
+                        matches!(
+                            runtime.current_status,
+                            ProcessStatus::Failed
+                                | ProcessStatus::Crashed
+                                | ProcessStatus::WaitingDependency
+                                | ProcessStatus::Blocked
+                        )
+                    })
+                    .unwrap_or(false)
+            })
+            .cloned()
+            .collect()
+    };
+
+    for process in failed_processes {
+        let _ = restart_process(app.clone(), state.clone(), process.id).await;
+    }
+    ApiResponse::ok(
+        state
+            .runtime
+            .states
+            .read()
+            .await
+            .values()
+            .cloned()
+            .collect(),
+    )
+}
+
+pub async fn get_runtime_state(
+    state: AppState,
+    process_id: Id,
+) -> ApiResponse<ProcessRuntimeState> {
+    ApiResponse::ok(
+        state
+            .runtime
+            .states
+            .read()
+            .await
+            .get(&process_id)
+            .cloned()
+            .unwrap_or_else(|| ProcessRuntimeState::stopped(process_id)),
+    )
+}
+
+pub async fn get_all_runtime_states(state: AppState) -> ApiResponse<Vec<ProcessRuntimeState>> {
+    ApiResponse::ok(
+        state
+            .runtime
+            .states
+            .read()
+            .await
+            .values()
+            .cloned()
+            .collect(),
+    )
+}
+
+pub async fn get_log_history(
+    state: AppState,
+    filters: Option<LogHistoryFilters>,
+) -> ApiResponse<Vec<LogEntry>> {
+    let filters = filters.unwrap_or(LogHistoryFilters {
+        project_id: None,
+        process_id: None,
+        limit: Some(1000),
+    });
+    let limit = filters.limit.unwrap_or(1000);
+    let logs = state.runtime.logs.read().await;
+    ApiResponse::ok(
+        logs.iter()
+            .filter(|log| {
+                filters
+                    .project_id
+                    .as_ref()
+                    .map(|id| &log.project_id == id)
+                    .unwrap_or(true)
+            })
+            .filter(|log| {
+                filters
+                    .process_id
+                    .as_ref()
+                    .map(|id| &log.process_id == id)
+                    .unwrap_or(true)
+            })
+            .rev()
+            .take(limit)
+            .cloned()
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect(),
+    )
+}
+
+pub async fn clear_log_history(state: AppState, project_id: Option<Id>) -> ApiResponse<bool> {
+    let mut logs = state.runtime.logs.write().await;
+    match project_id {
+        Some(project_id) => logs.retain(|log| log.project_id != project_id),
+        None => logs.clear(),
+    }
+    ApiResponse::ok(true)
+}
+
+pub async fn export_logs(
+    state: AppState,
+    filters: Option<LogHistoryFilters>,
+) -> ApiResponse<String> {
+    let filters = filters.unwrap_or(LogHistoryFilters {
+        project_id: None,
+        process_id: None,
+        limit: None,
+    });
+    let logs = state.runtime.logs.read().await;
+    let selected: Vec<LogEntry> = logs
+        .iter()
+        .filter(|log| {
+            filters
+                .project_id
+                .as_ref()
+                .map(|id| &log.project_id == id)
+                .unwrap_or(true)
+        })
+        .filter(|log| {
+            filters
+                .process_id
+                .as_ref()
+                .map(|id| &log.process_id == id)
+                .unwrap_or(true)
+        })
+        .cloned()
+        .collect();
+    match serde_json::to_string_pretty(&selected) {
+        Ok(content) => ApiResponse::ok(content),
+        Err(error) => ApiResponse::err(ApiError::with_details(
+            "CONFIG_SERIALIZATION_FAILED",
+            "Unable to export logs",
+            error,
+            false,
+        )),
+    }
+}
+
+pub async fn run_process_health_check(
+    app: AppHandle,
+    state: AppState,
+    process_id: Id,
+) -> ApiResponse<ProcessRuntimeState> {
+    let (project, process) = {
+        let config = state.config.read().await;
+        let process = match config
+            .processes
+            .iter()
+            .find(|process| process.id == process_id)
+            .cloned()
+        {
+            Some(process) => process,
+            None => {
+                return ApiResponse::err(ApiError::new(
+                    "PROCESS_NOT_FOUND",
+                    "Process not found",
+                    false,
+                ))
+            }
+        };
+        let project = config
+            .projects
+            .iter()
+            .find(|project| project.id == process.project_id)
+            .cloned();
+        (project, process)
+    };
+    let cwd = process
+        .working_directory
+        .as_deref()
+        .or(project.as_ref().map(|project| project.root_path.as_str()));
+    let status = match health::run_health_check(&process.health_check, cwd).await {
+        Ok(status) => status,
+        Err(error) => {
+            append_log(
+                &app,
+                &state,
+                &process,
+                StreamType::System,
+                LogLevel::Warn,
+                error.message.clone(),
+            )
+            .await;
+            HealthStatus::Unhealthy
+        }
+    };
+    let mut runtime = state
+        .runtime
+        .states
+        .read()
+        .await
+        .get(&process_id)
+        .cloned()
+        .unwrap_or_else(|| ProcessRuntimeState::stopped(process_id.clone()));
+    runtime.health_status = Some(status);
+    runtime.last_heartbeat = Some(Utc::now());
+    set_runtime(&app, &state, runtime.clone(), "process_health_changed").await;
+    ApiResponse::ok(runtime)
+}
+
+pub async fn get_health_summary(
+    state: AppState,
+    project_id: Option<Id>,
+) -> ApiResponse<HashMap<String, usize>> {
+    let ids: HashSet<Id> = {
+        let config = state.config.read().await;
+        config
+            .processes
+            .iter()
+            .filter(|process| {
+                project_id
+                    .as_ref()
+                    .map(|id| &process.project_id == id)
+                    .unwrap_or(true)
+            })
+            .map(|process| process.id.clone())
+            .collect()
+    };
+    let mut summary = HashMap::from([
+        ("healthy".to_string(), 0_usize),
+        ("unhealthy".to_string(), 0_usize),
+        ("unknown".to_string(), 0_usize),
+    ]);
+    for runtime in state
+        .runtime
+        .states
+        .read()
+        .await
+        .values()
+        .filter(|runtime| ids.contains(&runtime.process_id))
+    {
+        match runtime.health_status {
+            Some(HealthStatus::Healthy) => *summary.get_mut("healthy").unwrap() += 1,
+            Some(HealthStatus::Unhealthy | HealthStatus::Degraded) => {
+                *summary.get_mut("unhealthy").unwrap() += 1
+            }
+            _ => *summary.get_mut("unknown").unwrap() += 1,
+        }
+    }
+    ApiResponse::ok(summary)
+}
+
+pub async fn dashboard_summary(state: AppState) -> DashboardSummary {
+    let config = state.config.read().await;
+    let states = state.runtime.states.read().await;
+    let logs = state.runtime.logs.read().await;
+    DashboardSummary {
+        project_count: config.projects.len(),
+        process_count: config.processes.len(),
+        running_process_count: states
+            .values()
+            .filter(|state| matches!(state.current_status, ProcessStatus::Running))
+            .count(),
+        failed_process_count: states
+            .values()
+            .filter(|state| {
+                matches!(
+                    state.current_status,
+                    ProcessStatus::Failed
+                        | ProcessStatus::Crashed
+                        | ProcessStatus::Blocked
+                        | ProcessStatus::WaitingDependency
+                )
+            })
+            .count(),
+        port_conflict_count: detect_port_conflicts(states.values().collect()).len(),
+        auto_start_project_count: config
+            .projects
+            .iter()
+            .filter(|project| project.auto_start)
+            .count(),
+        recent_problem_logs: logs
+            .iter()
+            .filter(|log| matches!(log.level, LogLevel::Warn | LogLevel::Error))
+            .rev()
+            .take(12)
+            .cloned()
+            .collect(),
+    }
+}
+
+pub async fn detect_ports_in_use(state: AppState) -> ApiResponse<Vec<PortBinding>> {
+    let states = state.runtime.states.read().await;
+    ApiResponse::ok(detect_port_conflicts(states.values().collect()))
+}
+
+fn spawn_log_reader<R>(
+    app: AppHandle,
+    state: AppState,
+    process: ProcessDefinition,
+    stream: StreamType,
+    reader: R,
+) where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+{
+    tauri::async_runtime::spawn(async move {
+        let mut lines = BufReader::new(reader).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            let level = if matches!(stream, StreamType::Stderr) {
+                LogLevel::Warn
+            } else {
+                LogLevel::Info
+            };
+            append_log(&app, &state, &process, stream.clone(), level, line).await;
+        }
+    });
+}
+
+async fn append_log(
+    app: &AppHandle,
+    state: &AppState,
+    process: &ProcessDefinition,
+    stream: StreamType,
+    level: LogLevel,
+    message: impl Into<String>,
+) {
+    let message = message.into();
+    let entry = LogEntry {
+        id: storage::id("log"),
+        process_id: process.id.clone(),
+        project_id: process.project_id.clone(),
+        timestamp: Utc::now(),
+        stream,
+        level,
+        raw: Some(message.clone()),
+        message,
+    };
+    {
+        let retention = state.config.read().await.settings.log_retention_lines;
+        let mut logs = state.runtime.logs.write().await;
+        logs.push(entry.clone());
+        if logs.len() > retention {
+            let drain_count = logs.len() - retention;
+            logs.drain(0..drain_count);
+        }
+    }
+    let _ = app.emit("process_log", entry);
+}
+
+async fn mark_spawn_failure(
+    app: &AppHandle,
+    state: &AppState,
+    process: &ProcessDefinition,
+    runtime: &mut ProcessRuntimeState,
+    details: String,
+) {
+    runtime.current_status = ProcessStatus::Failed;
+    runtime.stopped_at = Some(Utc::now());
+    runtime.last_error = Some(details.clone());
+    runtime.health_status = Some(HealthStatus::Unknown);
+    append_log(
+        app,
+        state,
+        process,
+        StreamType::System,
+        LogLevel::Error,
+        details,
+    )
+    .await;
+    set_runtime(app, state, runtime.clone(), "process_failed").await;
+}
+
+async fn set_runtime(app: &AppHandle, state: &AppState, runtime: ProcessRuntimeState, event: &str) {
+    state
+        .runtime
+        .states
+        .write()
+        .await
+        .insert(runtime.process_id.clone(), runtime.clone());
+    let _ = app.emit(event, runtime);
+}
+
+async fn missing_dependency(state: &AppState, process: &ProcessDefinition) -> Option<String> {
+    if process.depends_on.is_empty() {
+        return None;
+    }
+    let config = state.config.read().await;
+    let states = state.runtime.states.read().await;
+    for key in &process.depends_on {
+        let dependency = config
+            .processes
+            .iter()
+            .find(|candidate| candidate.project_id == process.project_id && candidate.key == *key);
+        match dependency.and_then(|dependency| states.get(&dependency.id)) {
+            Some(runtime) if matches!(runtime.current_status, ProcessStatus::Running) => {}
+            _ => return Some(key.clone()),
+        }
+    }
+    None
+}
+
+fn resolve_working_directory(
+    project: &Project,
+    process: &ProcessDefinition,
+) -> Result<String, ApiError> {
+    let cwd = process
+        .working_directory
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+        .cloned()
+        .unwrap_or_else(|| project.root_path.clone());
+    if !Path::new(&cwd).exists() {
+        return Err(ApiError::with_details(
+            "INVALID_PROJECT_PATH",
+            "Working directory does not exist",
+            cwd,
+            false,
+        ));
+    }
+    Ok(cwd)
+}
+
+fn process_command_tokens(process: &ProcessDefinition) -> Result<Vec<String>, ApiError> {
+    let mut tokens = split_command_words(&process.command).map_err(|error| {
+        ApiError::with_details(
+            "INVALID_PROCESS_DEFINITION",
+            "Command could not be parsed",
+            error,
+            false,
+        )
+    })?;
+    tokens.extend(
+        process
+            .args
+            .iter()
+            .map(|arg| normalize_command_dashes(arg).trim().to_string())
+            .filter(|arg| !arg.is_empty()),
+    );
+    if tokens.is_empty() {
+        return Err(ApiError::new(
+            "INVALID_PROCESS_DEFINITION",
+            "Command is required",
+            false,
+        ));
+    }
+    Ok(tokens)
+}
+
+fn direct_process_command(tokens: &[String]) -> Command {
+    let mut command = Command::new(&tokens[0]);
+    command.args(&tokens[1..]);
+    command
+}
+
+fn shell_process_command(tokens: &[String]) -> Command {
+    let mut command = Command::new("/bin/zsh");
+    command
+        .arg("-lc")
+        .arg(format!("exec {}", display_command(tokens)));
+    command
+}
+
+fn configure_process_command(
+    command: &mut Command,
+    cwd: &str,
+    env: &HashMap<String, String>,
+    memory_limit_mb: Option<u64>,
+) {
+    // Put each managed command in its own process group so shells and spawned workers
+    // can be terminated together.
+    command.process_group(0);
+    command.current_dir(cwd);
+    command.envs(env);
+    command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .stdin(Stdio::null());
+    if let Some(memory_limit_mb) = memory_limit_mb {
+        let memory_limit_bytes = mb_to_bytes(memory_limit_mb);
+        unsafe {
+            command.pre_exec(move || {
+                setrlimit(
+                    Resource::RLIMIT_AS,
+                    memory_limit_bytes as _,
+                    memory_limit_bytes as _,
+                )
+                .map_err(|error| Error::new(ErrorKind::Other, error))?;
+                Ok(())
+            });
+        }
+    }
+}
+
+fn spawn_memory_monitor(
+    app: AppHandle,
+    state: AppState,
+    project_id: Id,
+    process_id: Id,
+    mut pid: u32,
+) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            sleep(Duration::from_secs(2)).await;
+            let tracked_record = state
+                .runtime
+                .process_records
+                .read()
+                .await
+                .get(&process_id)
+                .cloned();
+            let Some(tracked_record) = tracked_record else {
+                break;
+            };
+            if tracked_record.pid != pid {
+                pid = tracked_record.pid;
+            }
+
+            let Some(memory_usage) = read_process_memory_usage(pid).await else {
+                let process_group_id = normalized_process_group_id(&tracked_record);
+                if let Some(live_pid) = live_process_in_group(process_group_id).await {
+                    update_tracked_process_pid(&state, &process_id, live_pid, process_group_id)
+                        .await;
+                    let _ = persist_runtime_processes(&app, &state).await;
+                    pid = live_pid;
+                    continue;
+                }
+                untrack_runtime_process(&state, &process_id).await;
+                let _ = persist_runtime_processes(&app, &state).await;
+                if let Some((_, process)) =
+                    config_project_process_pair(&state, &project_id, &process_id).await
+                {
+                    let mut runtime = ProcessRuntimeState::stopped(process_id.clone());
+                    runtime.stopped_at = Some(Utc::now());
+                    set_runtime(&app, &state, runtime, "process_stopped").await;
+                    append_log(
+                        &app,
+                        &state,
+                        &process,
+                        StreamType::System,
+                        LogLevel::Info,
+                        format!("Recovered process group {process_group_id} exited"),
+                    )
+                    .await;
+                }
+                break;
+            };
+
+            let Some((project, process)) =
+                config_project_process_pair(&state, &project_id, &process_id).await
+            else {
+                break;
+            };
+
+            update_process_memory_usage(&app, &state, &process_id, memory_usage).await;
+
+            if let Some(limit_mb) = process.memory_limit_mb {
+                let limit_bytes = mb_to_bytes(limit_mb);
+                if memory_usage > limit_bytes {
+                    fail_process_for_memory_limit(
+                        &app,
+                        &state,
+                        &process,
+                        pid,
+                        memory_usage,
+                        limit_bytes,
+                    )
+                    .await;
+                    break;
+                }
+            }
+
+            if let Some(limit_mb) = project.memory_limit_mb {
+                let limit_bytes = mb_to_bytes(limit_mb);
+                let total_usage = project_memory_usage(&state, &project.id).await;
+                if total_usage > limit_bytes {
+                    fail_project_for_memory_limit(&app, &state, &project, total_usage, limit_bytes)
+                        .await;
+                    break;
+                }
+            }
+        }
+    });
+}
+
+async fn read_process_memory_usage(pid: u32) -> Option<u64> {
+    let output = Command::new("ps")
+        .arg("-o")
+        .arg("rss=")
+        .arg("-p")
+        .arg(pid.to_string())
+        .stderr(Stdio::null())
+        .output()
+        .await
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let output = String::from_utf8_lossy(&output.stdout);
+    let rss_kb = output.split_whitespace().next()?.parse::<u64>().ok()?;
+    Some(rss_kb.saturating_mul(1024))
+}
+
+async fn config_project_process_pair(
+    state: &AppState,
+    project_id: &str,
+    process_id: &str,
+) -> Option<(Project, ProcessDefinition)> {
+    let config = state.config.read().await;
+    let project = config
+        .projects
+        .iter()
+        .find(|project| project.id == project_id)
+        .cloned()?;
+    let process = config
+        .processes
+        .iter()
+        .find(|process| process.id == process_id)
+        .cloned()?;
+    Some((project, process))
+}
+
+async fn update_process_memory_usage(
+    app: &AppHandle,
+    state: &AppState,
+    process_id: &str,
+    memory_usage: u64,
+) {
+    let Some(mut runtime) = state.runtime.states.read().await.get(process_id).cloned() else {
+        return;
+    };
+    if !matches!(
+        runtime.current_status,
+        ProcessStatus::Running | ProcessStatus::Starting
+    ) {
+        return;
+    }
+    runtime.memory_usage = Some(memory_usage);
+    set_runtime(app, state, runtime, "process_metrics_changed").await;
+}
+
+async fn project_memory_usage(state: &AppState, project_id: &str) -> u64 {
+    let process_ids: HashSet<Id> = {
+        let config = state.config.read().await;
+        config
+            .processes
+            .iter()
+            .filter(|process| process.project_id == project_id)
+            .map(|process| process.id.clone())
+            .collect()
+    };
+    state
+        .runtime
+        .states
+        .read()
+        .await
+        .values()
+        .filter(|runtime| process_ids.contains(&runtime.process_id))
+        .filter(|runtime| {
+            matches!(
+                runtime.current_status,
+                ProcessStatus::Running | ProcessStatus::Starting
+            )
+        })
+        .filter_map(|runtime| runtime.memory_usage)
+        .sum()
+}
+
+async fn fail_process_for_memory_limit(
+    app: &AppHandle,
+    state: &AppState,
+    process: &ProcessDefinition,
+    pid: u32,
+    usage_bytes: u64,
+    limit_bytes: u64,
+) {
+    let details = format!(
+        "Process memory limit exceeded: {} used over {} limit",
+        format_bytes(usage_bytes),
+        format_bytes(limit_bytes)
+    );
+    append_log(
+        app,
+        state,
+        process,
+        StreamType::System,
+        LogLevel::Error,
+        details.clone(),
+    )
+    .await;
+    mark_process_memory_failure(app, state, process, details, usage_bytes).await;
+    let _ = force_kill_process_group(pid);
+}
+
+async fn fail_project_for_memory_limit(
+    app: &AppHandle,
+    state: &AppState,
+    project: &Project,
+    usage_bytes: u64,
+    limit_bytes: u64,
+) {
+    let process_ids: HashSet<Id> = {
+        let config = state.config.read().await;
+        config
+            .processes
+            .iter()
+            .filter(|process| process.project_id == project.id)
+            .map(|process| process.id.clone())
+            .collect()
+    };
+    let already_triggered = state
+        .runtime
+        .states
+        .read()
+        .await
+        .values()
+        .filter(|runtime| process_ids.contains(&runtime.process_id))
+        .any(|runtime| {
+            runtime
+                .last_error
+                .as_deref()
+                .map(|error| error.starts_with("Project memory limit exceeded"))
+                .unwrap_or(false)
+        });
+    if already_triggered {
+        return;
+    }
+
+    let processes = {
+        let config = state.config.read().await;
+        config
+            .processes
+            .iter()
+            .filter(|process| process.project_id == project.id)
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    let pids = state.runtime.pids.read().await.clone();
+    let details = format!(
+        "Project memory limit exceeded: {} used over {} limit",
+        format_bytes(usage_bytes),
+        format_bytes(limit_bytes)
+    );
+    for process in processes {
+        append_log(
+            app,
+            state,
+            &process,
+            StreamType::System,
+            LogLevel::Error,
+            details.clone(),
+        )
+        .await;
+        let memory_usage = state
+            .runtime
+            .states
+            .read()
+            .await
+            .get(&process.id)
+            .and_then(|runtime| runtime.memory_usage)
+            .unwrap_or(0);
+        mark_process_memory_failure(app, state, &process, details.clone(), memory_usage).await;
+        if let Some(pid) = pids.get(&process.id) {
+            let _ = force_kill_process_group(*pid);
+        }
+    }
+}
+
+async fn mark_process_memory_failure(
+    app: &AppHandle,
+    state: &AppState,
+    process: &ProcessDefinition,
+    details: String,
+    usage_bytes: u64,
+) {
+    let mut runtime = state
+        .runtime
+        .states
+        .read()
+        .await
+        .get(&process.id)
+        .cloned()
+        .unwrap_or_else(|| ProcessRuntimeState::stopped(process.id.clone()));
+    runtime.current_status = ProcessStatus::Failed;
+    runtime.last_error = Some(details);
+    runtime.memory_usage = Some(usage_bytes);
+    runtime.health_status = Some(HealthStatus::Unknown);
+    set_runtime(app, state, runtime, "process_failed").await;
+}
+
+fn mb_to_bytes(limit_mb: u64) -> u64 {
+    limit_mb.saturating_mul(1024).saturating_mul(1024)
+}
+
+fn format_bytes(bytes: u64) -> String {
+    let mb = bytes as f64 / 1024.0 / 1024.0;
+    if mb < 1024.0 {
+        format!("{mb:.1} MB")
+    } else {
+        format!("{:.2} GB", mb / 1024.0)
+    }
+}
+
+fn split_command_words(input: &str) -> Result<Vec<String>, String> {
+    let input = normalize_command_dashes(input.trim());
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut chars = input.chars().peekable();
+    let mut quote: Option<char> = None;
+
+    while let Some(character) = chars.next() {
+        match quote {
+            Some(active_quote) => {
+                if character == active_quote {
+                    quote = None;
+                } else if character == '\\' {
+                    if let Some(next) = chars.next() {
+                        current.push(next);
+                    } else {
+                        current.push(character);
+                    }
+                } else {
+                    current.push(character);
+                }
+            }
+            None => {
+                if character.is_whitespace() {
+                    if !current.is_empty() {
+                        tokens.push(std::mem::take(&mut current));
+                    }
+                } else if character == '\'' || character == '"' {
+                    quote = Some(character);
+                } else if character == '\\' {
+                    if let Some(next) = chars.next() {
+                        current.push(next);
+                    } else {
+                        current.push(character);
+                    }
+                } else {
+                    current.push(character);
+                }
+            }
+        }
+    }
+
+    if let Some(active_quote) = quote {
+        return Err(format!("Unclosed {active_quote} quote in command"));
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    Ok(tokens)
+}
+
+fn normalize_command_dashes(value: &str) -> String {
+    value.replace('—', "--").replace('–', "-").replace('−', "-")
+}
+
+fn display_command(tokens: &[String]) -> String {
+    tokens
+        .iter()
+        .map(|token| shell_quote(token))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn shell_quote(value: &str) -> String {
+    if value.is_empty() {
+        return "''".to_string();
+    }
+    if value.chars().all(|character| {
+        character.is_ascii_alphanumeric()
+            || matches!(
+                character,
+                '-' | '_' | '.' | '/' | ':' | '@' | '%' | '=' | '+'
+            )
+    }) {
+        return value.to_string();
+    }
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn detect_process_ports(process: &ProcessDefinition) -> Vec<PortBinding> {
+    let mut ports = vec![];
+    for arg in &process.args {
+        if let Some(value) = arg
+            .strip_prefix("--port=")
+            .and_then(|value| value.parse::<u16>().ok())
+        {
+            ports.push(PortBinding {
+                host: "127.0.0.1".to_string(),
+                port: value,
+                protocol: "unknown".to_string(),
+            });
+        }
+    }
+    if let crate::models::HealthCheck::Tcp { host, port, .. } = &process.health_check {
+        ports.push(PortBinding {
+            host: host.clone(),
+            port: *port,
+            protocol: "tcp".to_string(),
+        });
+    }
+    if let crate::models::HealthCheck::Http { url, .. } = &process.health_check {
+        if let Some((host, port)) = parse_http_host_port(url) {
+            ports.push(PortBinding {
+                host,
+                port,
+                protocol: "http".to_string(),
+            });
+        }
+    }
+    ports
+}
+
+fn parse_http_host_port(url: &str) -> Option<(String, u16)> {
+    let stripped = url.strip_prefix("http://")?;
+    let host_port = stripped.split('/').next()?;
+    if let Some((host, port)) = host_port.split_once(':') {
+        Some((host.to_string(), port.parse().ok()?))
+    } else {
+        Some((host_port.to_string(), 80))
+    }
+}
+
+fn detect_port_conflicts(states: Vec<&ProcessRuntimeState>) -> Vec<PortBinding> {
+    let mut seen = HashMap::<u16, PortBinding>::new();
+    let mut conflicts = vec![];
+    for binding in states
+        .into_iter()
+        .flat_map(|state| state.port_bindings.iter())
+    {
+        if seen.contains_key(&binding.port) {
+            conflicts.push(binding.clone());
+        } else {
+            seen.insert(binding.port, binding.clone());
+        }
+    }
+    conflicts
+}
+
+pub fn derive_project_status(states: &[ProcessRuntimeState]) -> ProjectStatus {
+    if states.is_empty() {
+        return ProjectStatus::Stopped;
+    }
+    let failed = states
+        .iter()
+        .filter(|state| {
+            matches!(
+                state.current_status,
+                ProcessStatus::Failed
+                    | ProcessStatus::Crashed
+                    | ProcessStatus::Blocked
+                    | ProcessStatus::WaitingDependency
+            )
+        })
+        .count();
+    let running = states
+        .iter()
+        .filter(|state| matches!(state.current_status, ProcessStatus::Running))
+        .count();
+    let starting = states.iter().any(|state| {
+        matches!(
+            state.current_status,
+            ProcessStatus::Starting | ProcessStatus::Queued
+        )
+    });
+    let stopped = states
+        .iter()
+        .filter(|state| {
+            matches!(
+                state.current_status,
+                ProcessStatus::Stopped | ProcessStatus::Idle
+            )
+        })
+        .count();
+
+    if failed == states.len() {
+        ProjectStatus::Failed
+    } else if failed > 0 {
+        ProjectStatus::Degraded
+    } else if starting {
+        ProjectStatus::Starting
+    } else if running == states.len() {
+        ProjectStatus::Running
+    } else if stopped == states.len() {
+        ProjectStatus::Stopped
+    } else {
+        ProjectStatus::Partial
+    }
+}
+
+async fn ordered_processes(state: &AppState, project_id: &str) -> Vec<ProcessDefinition> {
+    let processes: Vec<ProcessDefinition> = state
+        .config
+        .read()
+        .await
+        .processes
+        .iter()
+        .filter(|process| process.project_id == project_id)
+        .cloned()
+        .collect();
+    let by_key: HashMap<String, ProcessDefinition> = processes
+        .iter()
+        .map(|process| (process.key.clone(), process.clone()))
+        .collect();
+    let by_id: HashMap<String, ProcessDefinition> = processes
+        .iter()
+        .map(|process| (process.id.clone(), process.clone()))
+        .collect();
+    let mut visited = HashSet::new();
+    let mut output = vec![];
+    for process in processes {
+        visit_process(&process, &by_key, &by_id, &mut visited, &mut output);
+    }
+    output
+}
+
+fn visit_process(
+    process: &ProcessDefinition,
+    by_key: &HashMap<String, ProcessDefinition>,
+    by_id: &HashMap<String, ProcessDefinition>,
+    visited: &mut HashSet<Id>,
+    output: &mut Vec<ProcessDefinition>,
+) {
+    if visited.contains(&process.id) {
+        return;
+    }
+    for key in &process.depends_on {
+        if let Some(dependency) = by_key.get(key) {
+            visit_process(dependency, by_key, by_id, visited, output);
+        }
+    }
+    if let Some(process) = by_id.get(&process.id) {
+        visited.insert(process.id.clone());
+        output.push(process.clone());
+    }
+}
+
+async fn maybe_log_restart_policy(
+    app: &AppHandle,
+    state: &AppState,
+    process: &ProcessDefinition,
+    runtime: &ProcessRuntimeState,
+) {
+    let retry = match process.restart_policy.kind {
+        RestartPolicyKind::Never => false,
+        RestartPolicyKind::Always | RestartPolicyKind::OnFailure => true,
+        RestartPolicyKind::LimitedRetries => process
+            .restart_policy
+            .max_retries
+            .map(|max| runtime.restart_count < max)
+            .unwrap_or(false),
+    };
+    if retry {
+        append_log(
+            app,
+            state,
+            process,
+            StreamType::System,
+            LogLevel::Warn,
+            "Restart policy is configured; manual restart is available in MVP runtime",
+        )
+        .await;
+    }
+}

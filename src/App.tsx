@@ -8,6 +8,7 @@ import { ProcessDetailPanel } from "./features/processes/ProcessDetailPanel";
 import { ProjectDetailView } from "./features/projects/ProjectDetailView";
 import { ProjectsView } from "./features/projects/ProjectsView";
 import { SettingsView } from "./features/settings/SettingsView";
+import { applyThemePreference, subscribeToSystemThemeChange } from "./lib/theme";
 import { useOrchestratorStore } from "./stores/orchestratorStore";
 
 function App() {
@@ -16,10 +17,17 @@ function App() {
   const view = useOrchestratorStore((state) => state.view);
   const currentAction = useOrchestratorStore((state) => state.currentAction);
   const lastError = useOrchestratorStore((state) => state.lastError);
+  const theme = useOrchestratorStore((state) => state.settings?.theme ?? "system");
 
   useEffect(() => {
     void initialize();
   }, [initialize]);
+
+  useEffect(() => {
+    applyThemePreference(theme);
+    if (theme !== "system") return;
+    return subscribeToSystemThemeChange(() => applyThemePreference("system"));
+  }, [theme]);
 
   const content = {
     dashboard: <DashboardOverview />,

@@ -1,6 +1,6 @@
-import { useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { Copy, Download, Pause, Play, Trash2 } from "lucide-react";
+import { ArrowDown, Copy, Download, Pause, Play, Trash2 } from "lucide-react";
 import { formatClock } from "../lib/time";
 import type { LogEntry } from "../types/domain";
 
@@ -14,8 +14,17 @@ interface LiveLogViewerProps {
   onExport?: () => void;
 }
 
+const BOTTOM_THRESHOLD_PX = 36;
+const LOG_BOTTOM_PADDING_PX = 18;
+
+function isNearBottom(element: HTMLElement) {
+  return element.scrollHeight - element.scrollTop - element.clientHeight <= BOTTOM_THRESHOLD_PX;
+}
+
 export function LiveLogViewer({ logs, paused, liveTail, onPausedChange, onLiveTailChange, onClear, onExport }: LiveLogViewerProps) {
   const parentRef = useRef<HTMLDivElement | null>(null);
+  const lastScrollTopRef = useRef(0);
+  const [isAtBottom, setIsAtBottom] = useState(true);
   const rows = useMemo(() => {
     const seen = new Set<string>();
     return logs
@@ -29,13 +38,51 @@ export function LiveLogViewer({ logs, paused, liveTail, onPausedChange, onLiveTa
   const virtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => parentRef.current,
-    estimateSize: () => 28,
+    estimateSize: () => 32,
+    getItemKey: (index) => rows[index]?.id ?? index,
+    measureElement: (element) => element.getBoundingClientRect().height,
     overscan: 16
   });
+  const latestLogId = rows.at(-1)?.id;
 
-  if (liveTail && !paused && parentRef.current) {
-    window.requestAnimationFrame(() => parentRef.current?.scrollTo({ top: parentRef.current.scrollHeight }));
-  }
+  const scrollToLatest = useCallback(() => {
+    const frame = window.requestAnimationFrame(() => {
+      const element = parentRef.current;
+      if (!element) return;
+      element.scrollTo({ top: element.scrollHeight });
+      lastScrollTopRef.current = element.scrollTop;
+      setIsAtBottom(true);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, []);
+
+  const handleScroll = useCallback(() => {
+    const element = parentRef.current;
+    if (!element) return;
+    const nextIsAtBottom = isNearBottom(element);
+    const movedUp = element.scrollTop < lastScrollTopRef.current - 1;
+    lastScrollTopRef.current = element.scrollTop;
+    setIsAtBottom(nextIsAtBottom);
+    if (liveTail && movedUp && !nextIsAtBottom) {
+      onLiveTailChange(false);
+    }
+  }, [liveTail, onLiveTailChange]);
+
+  useEffect(() => {
+    const element = parentRef.current;
+    if (!element) return;
+    setIsAtBottom(isNearBottom(element));
+  }, [latestLogId, rows.length]);
+
+  useEffect(() => {
+    if (!liveTail || paused) return undefined;
+    return scrollToLatest();
+  }, [latestLogId, liveTail, paused, scrollToLatest]);
+
+  const jumpToLatest = () => {
+    onLiveTailChange(true);
+    scrollToLatest();
+  };
 
   const copyVisible = async () => {
     const text = rows
@@ -70,13 +117,15 @@ export function LiveLogViewer({ logs, paused, liveTail, onPausedChange, onLiveTa
           </button>
         </div>
       </header>
-      <div ref={parentRef} className="log-scroll">
-        <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
+      <div ref={parentRef} className="log-scroll" onScroll={handleScroll}>
+        <div style={{ height: virtualizer.getTotalSize() + LOG_BOTTOM_PADDING_PX, position: "relative" }}>
           {virtualizer.getVirtualItems().map((virtualRow) => {
             const log = rows[virtualRow.index];
             return (
               <div
-                key={log.id}
+                key={virtualRow.key}
+                data-index={virtualRow.index}
+                ref={virtualizer.measureElement}
                 className={`log-line ${log.level}`}
                 style={{ transform: `translateY(${virtualRow.start}px)`, position: "absolute", top: 0, left: 0, width: "100%" }}
               >
@@ -88,6 +137,12 @@ export function LiveLogViewer({ logs, paused, liveTail, onPausedChange, onLiveTa
           })}
         </div>
       </div>
+      {!isAtBottom ? (
+        <button className="log-jump-latest" type="button" onClick={jumpToLatest}>
+          <ArrowDown size={14} />
+          Latest
+        </button>
+      ) : null}
     </section>
   );
 }

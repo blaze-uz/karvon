@@ -2439,6 +2439,7 @@ button.danger-button:hover {
 }
 
 .log-viewer {
+  position: relative;
   min-height: 340px;
   height: min(50vh, 600px);
   display: grid;
@@ -2460,19 +2461,22 @@ button.danger-button:hover {
 .log-scroll {
   min-height: 0;
   overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
   background: var(--mono-bg);
   color: var(--mono-text);
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   font-size: 12px;
+  line-height: 1.45;
 }
 
 .log-line {
-  min-height: 28px;
+  min-height: 32px;
   display: grid;
   grid-template-columns: 76px 64px minmax(0, 1fr);
-  align-items: center;
+  align-items: start;
   gap: 9px;
-  padding: 0 12px;
+  padding: 7px 12px;
   border-bottom: 1px solid var(--mono-line);
 }
 
@@ -2489,6 +2493,7 @@ button.danger-button:hover {
 .log-time,
 .log-stream {
   color: var(--mono-muted);
+  padding-top: 1px;
 }
 
 .log-stream {
@@ -2505,9 +2510,28 @@ button.danger-button:hover {
 
 .log-message {
   min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.log-jump-latest {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  min-height: 28px;
+  border-color: rgba(255, 255, 255, 0.14);
+  background: rgba(32, 32, 29, 0.92);
+  color: var(--mono-text);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.24);
+  backdrop-filter: blur(10px);
+  z-index: 2;
+}
+
+.log-jump-latest:hover {
+  border-color: rgba(255, 255, 255, 0.24);
+  background: rgba(42, 42, 38, 0.95);
 }
 
 .settings-grid {

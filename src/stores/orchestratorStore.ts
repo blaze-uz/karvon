@@ -58,6 +58,7 @@ interface OrchestratorState {
   stopProcess: (processId: ID) => Promise<void>;
   restartProcess: (processId: ID) => Promise<void>;
   startProject: (projectId: ID) => Promise<void>;
+  startAutoStartProcesses: (projectId: ID) => Promise<void>;
   stopProject: (projectId: ID) => Promise<void>;
   restartProject: (projectId: ID) => Promise<void>;
   restartFailed: (projectId?: ID) => Promise<void>;
@@ -276,6 +277,13 @@ export const useOrchestratorStore = create<OrchestratorState>((set, get) => ({
   startProject: async (projectId) => {
     await safeAction(set, { key: `start-project:${projectId}`, label: "Starting project" }, async () => {
       const detail = await api.startProject(projectId).then(unwrap);
+      set((state) => ({ processes: mergeProcesses(state.processes, detail.processes), runtimeStates: { ...state.runtimeStates, ...mergeRuntime(detail.runtimeStates) } }));
+      await get().refreshDashboard();
+    });
+  },
+  startAutoStartProcesses: async (projectId) => {
+    await safeAction(set, { key: `start-auto:${projectId}`, label: "Starting marked processes" }, async () => {
+      const detail = await api.startAutoStartProcesses(projectId).then(unwrap);
       set((state) => ({ processes: mergeProcesses(state.processes, detail.processes), runtimeStates: { ...state.runtimeStates, ...mergeRuntime(detail.runtimeStates) } }));
       await get().refreshDashboard();
     });

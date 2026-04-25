@@ -298,10 +298,11 @@ kbd {
 }
 
 .app-shell {
+  --sidebar-width: 242px;
   width: 100%;
   height: 100%;
   display: grid;
-  grid-template-columns: 242px minmax(0, 1fr);
+  grid-template-columns: var(--sidebar-width) 0 minmax(0, 1fr);
   background: var(--app-bg);
 }
 
@@ -315,6 +316,79 @@ kbd {
   overflow: hidden;
   color: var(--text-soft);
   font-size: 12px;
+}
+
+.sidebar-resize-handle {
+  width: 9px;
+  height: 100%;
+  margin-left: -5px;
+  margin-right: -4px;
+  position: relative;
+  z-index: 10;
+  cursor: col-resize;
+  touch-action: none;
+  outline: none;
+}
+
+.sidebar-resize-handle::before {
+  content: "";
+  position: absolute;
+  inset: 0 3px;
+  background: transparent;
+  transition: background-color 120ms ease;
+}
+
+.sidebar-resize-handle:hover::before,
+.sidebar-resize-handle:focus-visible::before,
+.sidebar-resize-handle.active::before {
+  background: var(--accent);
+}
+
+body.is-resizing-sidebar {
+  cursor: col-resize;
+  user-select: none;
+}
+
+.app-brand {
+  min-height: 48px;
+  border-bottom: 1px solid var(--line);
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  padding: 7px 12px;
+  color: var(--text-strong);
+}
+
+.app-brand img {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  display: block;
+}
+
+.app-brand div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.app-brand strong,
+.app-brand span {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.app-brand strong {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.app-brand span {
+  color: var(--muted);
+  font-size: 10px;
 }
 
 .sidebar-search {
@@ -1532,6 +1606,24 @@ small {
   padding: 0;
 }
 
+.solo-project-name-editor {
+  min-width: min(360px, 100%);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.solo-project-name-editor input {
+  min-width: 180px;
+  height: 26px;
+}
+
+.solo-project-name-editor button {
+  width: 26px;
+  min-width: 26px;
+  padding: 0;
+}
+
 .solo-running-pill {
   min-height: 24px;
   border-radius: 7px;
@@ -1712,6 +1804,22 @@ small {
   background: var(--mark-soft-bg);
 }
 
+.solo-icon-input {
+  width: 56px;
+  height: 28px;
+  text-transform: uppercase;
+}
+
+.solo-color-input {
+  width: 32px;
+  min-width: 32px;
+  height: 28px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--surface);
+  padding: 2px;
+}
+
 .solo-switch {
   position: relative;
   width: 32px;
@@ -1719,6 +1827,13 @@ small {
   border-radius: 999px;
   display: inline-flex;
   background: var(--switch-bg);
+  cursor: pointer;
+}
+
+.solo-switch input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .solo-switch span {
@@ -3050,6 +3165,10 @@ button.danger-button:hover {
     min-height: 100%;
     height: auto;
     grid-template-columns: 1fr;
+  }
+
+  .sidebar-resize-handle {
+    display: none;
   }
 
   .sidebar {

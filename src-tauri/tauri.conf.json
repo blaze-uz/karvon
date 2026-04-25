@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Local Project Orchestrator",
+  "productName": "App Orchestrator",
   "version": "0.1.0",
-  "identifier": "dev.local-project-orchestrator.app",
+  "identifier": "uz.blaze.app-orchestrator",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://127.0.0.1:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Local Project Orchestrator",
+        "title": "App Orchestrator",
         "width": 1440,
         "height": 920,
         "minWidth": 980,
@@ -28,6 +28,13 @@
   "bundle": {
     "active": true,
     "targets": ["app", "dmg"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
     "createUpdaterArtifacts": true
   },
   "plugins": {

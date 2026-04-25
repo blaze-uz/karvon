@@ -35,6 +35,7 @@ pub fn load_config(app: &AppHandle) -> AppConfig {
     let Ok(path) = config_path(app) else {
         return AppConfig::default();
     };
+    let _ = migrate_legacy_app_config_if_needed(&path);
     if !path.exists() {
         let config = AppConfig::default();
         let _ = save_config_to_path(&path, &config);
@@ -250,6 +251,72 @@ fn save_config_to_path(path: &Path, config: &AppConfig) -> Result<(), ApiError> 
             true,
         )
     })
+}
+
+fn migrate_legacy_app_config_if_needed(path: &Path) -> Result<(), ApiError> {
+    let Some(current_dir) = path.parent() else {
+        return Ok(());
+    };
+    let Some(config_parent) = current_dir.parent() else {
+        return Ok(());
+    };
+    let legacy_dir = config_parent.join("dev.local-project-orchestrator.app");
+    let legacy_config_path = legacy_dir.join("config.json");
+    if !legacy_config_path.exists() || !should_use_legacy_config(path, &legacy_config_path) {
+        return Ok(());
+    }
+
+    fs::create_dir_all(current_dir).map_err(|error| {
+        ApiError::with_details(
+            "CONFIG_PATH_UNAVAILABLE",
+            "Unable to create app config directory",
+            error,
+            false,
+        )
+    })?;
+    if path.exists() {
+        let backup_path = migration_backup_path(path);
+        let _ = fs::copy(path, backup_path);
+    }
+    fs::copy(&legacy_config_path, path).map_err(|error| {
+        ApiError::with_details(
+            "CONFIG_WRITE_FAILED",
+            "Unable to migrate legacy app config",
+            error,
+            true,
+        )
+    })?;
+
+    let legacy_runtime_path = legacy_dir.join("runtime-pids.json");
+    if legacy_runtime_path.exists() {
+        let _ = fs::copy(legacy_runtime_path, current_dir.join("runtime-pids.json"));
+    }
+    Ok(())
+}
+
+fn should_use_legacy_config(current_path: &Path, legacy_path: &Path) -> bool {
+    let legacy_score = config_content_score(legacy_path);
+    if legacy_score == 0 {
+        return false;
+    }
+    if !current_path.exists() {
+        return true;
+    }
+    config_content_score(current_path) == 0
+}
+
+fn config_content_score(path: &Path) -> usize {
+    let Some(value) = fs::read_to_string(path)
+        .ok()
+        .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
+    else {
+        return 0;
+    };
+    ["projects", "processes", "activity"]
+        .iter()
+        .filter_map(|key| value.get(key).and_then(|items| items.as_array()))
+        .map(Vec::len)
+        .sum()
 }
 
 pub fn slugify(value: &str) -> String {

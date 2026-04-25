@@ -1,6 +1,6 @@
-# Local Project Orchestrator Architecture
+# App Orchestrator Architecture
 
-Local Project Orchestrator is split into a React presentation layer and a Tauri-native orchestration layer.
+App Orchestrator is split into a React presentation layer and a Tauri-native orchestration layer.
 
 ## Frontend
 

@@ -458,6 +458,14 @@ pub async fn start_project(
 }
 
 #[tauri::command]
+pub async fn start_auto_start_processes(
+    app: AppHandle,
+    project_id: Id,
+) -> ApiResponse<crate::models::ProjectDetail> {
+    process_manager::start_auto_start_processes(app, app_state(), project_id).await
+}
+
+#[tauri::command]
 pub async fn stop_project(
     app: AppHandle,
     project_id: Id,

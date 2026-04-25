@@ -2,10 +2,13 @@ import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 
-const appName = "Local Project Orchestrator.app";
-const bundleIdentifier = "dev.local-project-orchestrator.app";
+const appName = "App Orchestrator.app";
+const legacyAppName = "Local Project Orchestrator.app";
+const bundleIdentifier = "uz.blaze.app-orchestrator";
+const legacyBundleIdentifier = "dev.local-project-orchestrator.app";
 const builtAppPath = join(process.cwd(), "src-tauri", "target", "release", "bundle", "macos", appName);
 const installedAppPath = join("/Applications", appName);
+const legacyInstalledAppPath = join("/Applications", legacyAppName);
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, { stdio: options.quiet ? "ignore" : "inherit" });
@@ -20,7 +23,7 @@ function sleep(ms) {
 }
 
 function isInstalledAppRunning() {
-  const result = spawnSync("pgrep", ["-f", `${appName}/Contents/MacOS/local-project-orchestrator`], {
+  const result = spawnSync("pgrep", ["-f", `${appName}/Contents/MacOS/app-orchestrator|${legacyAppName}/Contents/MacOS/local-project-orchestrator`], {
     stdio: "ignore"
   });
   return result.status === 0;
@@ -51,13 +54,18 @@ run("osascript", ["-e", `tell application id "${bundleIdentifier}" to quit`], {
   allowFailure: true,
   quiet: true
 });
+run("osascript", ["-e", `tell application id "${legacyBundleIdentifier}" to quit`], {
+  allowFailure: true,
+  quiet: true
+});
 if (!(await waitForInstalledAppToQuit())) {
-  console.error("Local Project Orchestrator is still running. Quit it and rerun `npm run desktop:install`.");
+  console.error("App Orchestrator is still running. Quit it and rerun `npm run desktop:install`.");
   process.exit(1);
 }
 
 try {
   rmSync(installedAppPath, { recursive: true, force: true });
+  rmSync(legacyInstalledAppPath, { recursive: true, force: true });
 } catch (error) {
   console.error(`Unable to replace ${installedAppPath}. You may need write access to /Applications.`);
   console.error(error instanceof Error ? error.message : String(error));

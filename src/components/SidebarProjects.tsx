@@ -114,6 +114,14 @@ export function SidebarProjects() {
 
   return (
     <aside className="sidebar">
+      <div className="app-brand">
+        <img src="/app-logo.png" alt="" aria-hidden="true" />
+        <div>
+          <strong>App Orchestrator</strong>
+          <span>Process control</span>
+        </div>
+      </div>
+
       <label className="sidebar-search">
         <Search size={13} />
         <input value={filters.query} onChange={(event) => setProjectFilters({ query: event.target.value })} placeholder="Filter processes..." />
@@ -123,7 +131,7 @@ export function SidebarProjects() {
       <button className="solo-project-row primary" type="button" onClick={() => (selectedProject ? handleProjectSelect(selectedProject.id) : selectView("projects"))}>
         {selectedProjectExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
         <span className="solo-mark">{selectedProject?.name.slice(0, 2).toUpperCase() ?? "LO"}</span>
-        <strong>{selectedProject?.name ?? "Local Orchestrator"}</strong>
+        <strong>{selectedProject?.name ?? "App Orchestrator"}</strong>
         <small>{runningMeta(selectedProject, selectedProcesses, runtimeStates)}</small>
       </button>
 

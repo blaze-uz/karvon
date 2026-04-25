@@ -17,6 +17,11 @@ pub fn run() {
     let shutdown_started = Arc::new(AtomicBool::new(false));
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -27,6 +32,10 @@ pub fn run() {
             state::set_global_state(state.clone());
             app.manage(state);
             tauri::async_runtime::block_on(process_manager::recover_tracked_processes(
+                app.handle().clone(),
+                state::app_state(),
+            ));
+            tauri::async_runtime::block_on(process_manager::start_marked_projects_on_launch(
                 app.handle().clone(),
                 state::app_state(),
             ));
@@ -51,6 +60,7 @@ pub fn run() {
             commands::stop_process,
             commands::restart_process,
             commands::start_project,
+            commands::start_auto_start_processes,
             commands::stop_project,
             commands::restart_project,
             commands::restart_failed_processes,
@@ -73,7 +83,7 @@ pub fn run() {
             commands::export_config
         ])
         .build(tauri::generate_context!())
-        .expect("error while building Local Project Orchestrator");
+        .expect("error while building App Orchestrator");
 
     let shutdown_started = shutdown_started.clone();
     app.run(move |_app_handle, event| {

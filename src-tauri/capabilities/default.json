@@ -8,6 +8,8 @@
     "shell:default",
     "dialog:default",
     "dialog:allow-confirm",
+    "autostart:default",
+    "notification:default",
     "updater:default",
     "process:allow-restart"
   ]

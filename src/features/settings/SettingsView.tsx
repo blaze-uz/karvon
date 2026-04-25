@@ -1,7 +1,9 @@
 import type { ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
 import { Download, FolderOpen, RefreshCw, RotateCcw, Upload } from "lucide-react";
+import { getLaunchOnLoginEnabled, setLaunchOnLoginEnabled } from "../../lib/autostart";
 import { selectFolder } from "../../lib/folderPicker";
+import { ensureNotificationPermission } from "../../lib/notifications";
 import {
   canUseAppUpdater,
   checkForAppUpdate,
@@ -35,10 +37,13 @@ export function SettingsView() {
   const exportConfig = useOrchestratorStore((state) => state.exportConfig);
   const importConfig = useOrchestratorStore((state) => state.importConfig);
   const activity = useOrchestratorStore((state) => state.activity);
+  const selectView = useOrchestratorStore((state) => state.selectView);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const autostartSyncedRef = useRef(false);
   const [activeTab, setActiveTab] = useState<SettingsTab>("appearance");
   const [redactSecrets, setRedactSecrets] = useState(true);
   const [importError, setImportError] = useState<string>();
+  const [integrationError, setIntegrationError] = useState<string>();
   const [appVersion, setAppVersion] = useState(__APP_VERSION__);
   const [availableUpdate, setAvailableUpdate] = useState<Update | null>(null);
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>("idle");
@@ -57,6 +62,24 @@ export function SettingsView() {
     };
   }, []);
 
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") selectView("dashboard");
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [selectView]);
+
+  useEffect(() => {
+    if (!settings || autostartSyncedRef.current) return;
+    autostartSyncedRef.current = true;
+    getLaunchOnLoginEnabled()
+      .then((launchOnLogin) => {
+        if (launchOnLogin !== settings.launchOnLogin) void updateSettings({ ...settings, launchOnLogin });
+      })
+      .catch(() => undefined);
+  }, [settings, updateSettings]);
+
   if (!settings) {
     return (
       <main className="empty-state">
@@ -66,7 +89,27 @@ export function SettingsView() {
   }
 
   const patchSettings = async (patch: Partial<AppSettings>) => {
+    setIntegrationError(undefined);
     await updateSettings({ ...settings, ...patch });
+  };
+
+  const toggleLaunchOnLogin = async (launchOnLogin: boolean) => {
+    setIntegrationError(undefined);
+    try {
+      await setLaunchOnLoginEnabled(launchOnLogin);
+      await patchSettings({ launchOnLogin });
+    } catch (error) {
+      setIntegrationError(error instanceof Error ? error.message : "Unable to update launch on login");
+    }
+  };
+
+  const toggleNotifications = async (notificationsEnabled: boolean) => {
+    setIntegrationError(undefined);
+    if (notificationsEnabled && !(await ensureNotificationPermission())) {
+      setIntegrationError("Notification permission was not granted.");
+      return;
+    }
+    await patchSettings({ notificationsEnabled });
   };
 
   const downloadConfig = async () => {
@@ -75,7 +118,7 @@ export function SettingsView() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = "local-project-orchestrator.config.json";
+    link.download = "app-orchestrator.config.json";
     link.click();
     URL.revokeObjectURL(url);
   };
@@ -149,7 +192,9 @@ export function SettingsView() {
           <h2>Settings</h2>
           <span>{projects.length} projects</span>
         </div>
-        <span className="solo-settings-esc">ESC</span>
+        <span className="solo-settings-esc" title="Press Escape to return to dashboard">
+          ESC
+        </span>
       </header>
 
       <nav className="solo-settings-tabs" aria-label="Settings tabs">
@@ -182,13 +227,11 @@ export function SettingsView() {
         {activeTab === "notifications" ? (
           <SettingsTabPanel>
             <SettingsGroup label="Notifications">
-              <SettingsRow title="Crash & exit alerts" detail="Get notified when processes fail or exit unexpectedly">
-                <Switch checked={settings.notificationsEnabled} onChange={(notificationsEnabled) => patchSettings({ notificationsEnabled })} />
-              </SettingsRow>
-              <SettingsRow title="Health check alerts" detail="Use the same notification setting for degraded services">
-                <Switch checked={settings.notificationsEnabled} onChange={(notificationsEnabled) => patchSettings({ notificationsEnabled })} />
+              <SettingsRow title="Process alerts" detail="Crash, exit, and health check notifications">
+                <Switch checked={settings.notificationsEnabled} onChange={toggleNotifications} />
               </SettingsRow>
             </SettingsGroup>
+            {integrationError ? <p className="solo-settings-error">{integrationError}</p> : null}
           </SettingsTabPanel>
         ) : null}
 
@@ -196,12 +239,13 @@ export function SettingsView() {
           <SettingsTabPanel>
             <SettingsGroup label="Application">
               <SettingsRow title="Launch app on login" detail="Open the orchestrator when macOS starts">
-                <Switch checked={settings.launchOnLogin} onChange={(launchOnLogin) => patchSettings({ launchOnLogin })} />
+                <Switch checked={settings.launchOnLogin} onChange={toggleLaunchOnLogin} />
               </SettingsRow>
               <SettingsRow title="Start marked projects" detail="Auto-start projects marked for launch">
                 <Switch checked={settings.autoStartMarkedProjects} onChange={(autoStartMarkedProjects) => patchSettings({ autoStartMarkedProjects })} />
               </SettingsRow>
             </SettingsGroup>
+            {integrationError ? <p className="solo-settings-error">{integrationError}</p> : null}
           </SettingsTabPanel>
         ) : null}
 

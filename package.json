@@ -1,5 +1,5 @@
 {
-  "name": "local-project-orchestrator",
+  "name": "app-orchestrator",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -18,7 +18,9 @@
   "dependencies": {
     "@tanstack/react-virtual": "^3.13.12",
     "@tauri-apps/api": "^2.10.1",
+    "@tauri-apps/plugin-autostart": "^2.5.1",
     "@tauri-apps/plugin-dialog": "^2.7.0",
+    "@tauri-apps/plugin-notification": "^2.3.3",
     "@tauri-apps/plugin-process": "^2.3.1",
     "@tauri-apps/plugin-updater": "^2.10.1",
     "clsx": "^2.1.1",

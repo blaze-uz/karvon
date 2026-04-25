@@ -23,6 +23,7 @@ use std::{
     time::Duration,
 };
 use tauri::{AppHandle, Emitter};
+use tauri_plugin_notification::NotificationExt;
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
     process::Command,
@@ -1114,6 +1115,77 @@ pub async fn start_project(
     }
 }
 
+pub async fn start_auto_start_processes(
+    app: AppHandle,
+    state: AppState,
+    project_id: Id,
+) -> ApiResponse<ProjectDetail> {
+    let processes = ordered_processes(&state, &project_id).await;
+    for process in processes.into_iter().filter(|process| process.auto_start) {
+        let response = start_process(app.clone(), state.clone(), process.id.clone()).await;
+        if !response.success {
+            return ApiResponse::err(response.error.unwrap_or_else(|| {
+                ApiError::new(
+                    "COMMAND_EXECUTION_FAILED",
+                    "Unable to start marked project process",
+                    true,
+                )
+            }));
+        }
+        if let Some(delay) = process.startup_delay_ms {
+            sleep(Duration::from_millis(delay)).await;
+        }
+    }
+    match get_project_detail(&state, &project_id).await {
+        Ok(detail) => ApiResponse::ok(detail),
+        Err(error) => ApiResponse::err(error),
+    }
+}
+
+pub async fn start_marked_projects_on_launch(app: AppHandle, state: AppState) {
+    let mut projects = {
+        let config = state.config.read().await;
+        if !config.settings.auto_start_marked_projects {
+            return;
+        }
+        config
+            .projects
+            .iter()
+            .filter(|project| project.auto_start)
+            .cloned()
+            .collect::<Vec<Project>>()
+    };
+    projects.sort_by_key(|project| project.startup_order);
+    for project in projects {
+        let processes = ordered_processes(&state, &project.id).await;
+        for process in processes.into_iter().filter(|process| process.auto_start) {
+            let already_active = state
+                .runtime
+                .states
+                .read()
+                .await
+                .get(&process.id)
+                .map(|runtime| {
+                    matches!(
+                        runtime.current_status,
+                        ProcessStatus::Running
+                            | ProcessStatus::Starting
+                            | ProcessStatus::Queued
+                            | ProcessStatus::Stopping
+                    )
+                })
+                .unwrap_or(false);
+            if already_active {
+                continue;
+            }
+            let _ = start_process(app.clone(), state.clone(), process.id.clone()).await;
+            if let Some(delay) = process.startup_delay_ms {
+                sleep(Duration::from_millis(delay)).await;
+            }
+        }
+    }
+}
+
 pub async fn stop_project(
     app: AppHandle,
     state: AppState,
@@ -1544,7 +1616,65 @@ async fn set_runtime(app: &AppHandle, state: &AppState, runtime: ProcessRuntimeS
         .write()
         .await
         .insert(runtime.process_id.clone(), runtime.clone());
-    let _ = app.emit(event, runtime);
+    let _ = app.emit(event, runtime.clone());
+    maybe_notify_runtime_event(app, state, event, &runtime).await;
+}
+
+async fn maybe_notify_runtime_event(
+    app: &AppHandle,
+    state: &AppState,
+    event: &str,
+    runtime: &ProcessRuntimeState,
+) {
+    if event != "process_failed" && event != "process_health_changed" {
+        return;
+    }
+
+    let config = state.config.read().await;
+    if !config.settings.notifications_enabled {
+        return;
+    }
+
+    let Some(process) = config
+        .processes
+        .iter()
+        .find(|process| process.id == runtime.process_id)
+        .cloned()
+    else {
+        return;
+    };
+
+    let project_name = config
+        .projects
+        .iter()
+        .find(|project| project.id == process.project_id)
+        .map(|project| project.name.clone())
+        .unwrap_or_else(|| "Project".to_string());
+    drop(config);
+
+    let should_notify = match event {
+        "process_failed" => true,
+        "process_health_changed" => matches!(
+            runtime.health_status,
+            Some(HealthStatus::Unhealthy | HealthStatus::Degraded)
+        ),
+        _ => false,
+    };
+    if !should_notify {
+        return;
+    }
+
+    let title = if event == "process_failed" {
+        format!("{} failed", process.name)
+    } else {
+        format!("{} health degraded", process.name)
+    };
+    let body = runtime
+        .last_error
+        .as_deref()
+        .map(|error| format!("{}: {error}", project_name))
+        .unwrap_or_else(|| format!("{}: status changed", project_name));
+    let _ = app.notification().builder().title(title).body(body).show();
 }
 
 async fn missing_dependency(state: &AppState, process: &ProcessDefinition) -> Option<String> {

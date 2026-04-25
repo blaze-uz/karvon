@@ -59,6 +59,7 @@ export const api = {
   stopProcess: (processId: ID) => command<ProcessRuntimeState>("stop_process", { processId }),
   restartProcess: (processId: ID) => command<ProcessRuntimeState>("restart_process", { processId }),
   startProject: (projectId: ID) => command<ProjectDetail>("start_project", { projectId }),
+  startAutoStartProcesses: (projectId: ID) => command<ProjectDetail>("start_auto_start_processes", { projectId }),
   stopProject: (projectId: ID) => command<ProjectDetail>("stop_project", { projectId }),
   restartProject: (projectId: ID) => command<ProjectDetail>("restart_project", { projectId }),
   restartFailedProcesses: (projectId?: ID) => command<ProcessRuntimeState[]>("restart_failed_processes", { projectId }),

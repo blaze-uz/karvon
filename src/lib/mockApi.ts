@@ -372,6 +372,15 @@ class MockApi {
     return this.getProjectDetail(projectId);
   }
 
+  async startAutoStartProcesses(projectId: ID) {
+    const processes = this.orderedProcesses(projectId);
+    for (const process of processes.filter((item) => item.autoStart)) {
+      await this.startProcess(process.id);
+      if (process.startupDelayMs) await new Promise((resolve) => window.setTimeout(resolve, process.startupDelayMs));
+    }
+    return this.getProjectDetail(projectId);
+  }
+
   async stopProject(projectId: ID) {
     const processes = this.orderedProcesses(projectId).reverse();
     for (const process of processes) await this.stopProcess(process.id);

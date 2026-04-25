@@ -1,4 +1,4 @@
-# Local Project Orchestrator
+# App Orchestrator
 
 macOS desktop app for managing local projects and their processes from one orchestration panel.
 
@@ -61,7 +61,7 @@ npm run desktop:install
 npm run desktop:open
 ```
 
-`desktop:install` builds the signed updater bundle, quits a running copy of Local Project Orchestrator, copies the `.app` into `/Applications`, and reopens it. User data is stored in the Tauri app config directory, outside the `.app` bundle, so replacing the app does not remove projects, settings, or activity.
+`desktop:install` builds the signed updater bundle, quits a running copy of App Orchestrator, copies the `.app` into `/Applications`, and reopens it. User data is stored in the Tauri app config directory, outside the `.app` bundle, so replacing the app does not remove projects, settings, or activity.
 
 ## Releases and updates
 
@@ -74,8 +74,10 @@ https://github.com/blaze-uz/app-orchestrator/releases/latest/download/latest.jso
 The updater public key is committed in `src-tauri/tauri.conf.json`. Keep the private key secret. For local builds, the expected key path is:
 
 ```text
-~/.tauri/local-project-orchestrator.key
+~/.tauri/app-orchestrator.key
 ```
+
+Local builds also accept the legacy `~/.tauri/local-project-orchestrator.key` path while existing signing keys are being migrated.
 
 For GitHub Releases, add these repository secrets:
 

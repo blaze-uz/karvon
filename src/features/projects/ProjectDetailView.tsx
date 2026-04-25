@@ -1,10 +1,11 @@
-import { Copy, Edit3, ExternalLink, FolderOpen, Play, Plus, RotateCcw, Square, Trash2 } from "lucide-react";
+import { Check, Copy, Edit3, FolderOpen, Play, Plus, RotateCcw, Square, Trash2, X } from "lucide-react";
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
 import { StatusBadge } from "../../components/StatusBadge";
 import { api } from "../../lib/api";
 import { formatMemory, formatMemoryLimit, normalizeMemoryLimitMb, parseMemoryLimitInput } from "../../lib/memory";
-import { deriveProjectStatus, isRuntimeBusy } from "../../lib/status";
+import { ensureNotificationPermission } from "../../lib/notifications";
+import { isRuntimeBusy } from "../../lib/status";
 import { envToText, formatPath, formatRelativeTime, normalizeCliText, parseEnvInput, parseListInput } from "../../lib/time";
 import { useOrchestratorStore } from "../../stores/orchestratorStore";
 import type { ProcessDefinition, ProcessFormInput, ProcessRuntimeState } from "../../types/domain";
@@ -50,11 +51,17 @@ export function ProjectDetailView() {
   const stopProcess = useOrchestratorStore((state) => state.stopProcess);
   const restartProcess = useOrchestratorStore((state) => state.restartProcess);
   const startProject = useOrchestratorStore((state) => state.startProject);
+  const startAutoStartProcesses = useOrchestratorStore((state) => state.startAutoStartProcesses);
   const stopProject = useOrchestratorStore((state) => state.stopProject);
   const restartProject = useOrchestratorStore((state) => state.restartProject);
+  const settings = useOrchestratorStore((state) => state.settings);
+  const updateSettings = useOrchestratorStore((state) => state.updateSettings);
   const [formOpen, setFormOpen] = useState(false);
   const [draft, setDraft] = useState<ProcessFormInput | null>(null);
   const [processFormError, setProcessFormError] = useState<string>();
+  const [editingProjectName, setEditingProjectName] = useState(false);
+  const [projectNameDraft, setProjectNameDraft] = useState("");
+  const [iconDraft, setIconDraft] = useState("");
 
   const project = useMemo(() => projects.find((item) => item.id === selectedProjectId), [projects, selectedProjectId]);
   const projectProcesses = useMemo(() => processes.filter((process) => process.projectId === selectedProjectId), [processes, selectedProjectId]);
@@ -62,9 +69,15 @@ export function ProjectDetailView() {
     () => projectProcesses.map((process) => runtimeStates[process.id]).filter((state): state is ProcessRuntimeState => Boolean(state)),
     [projectProcesses, runtimeStates]
   );
-  const status = deriveProjectStatus(processStates);
   const runningCount = processStates.filter((state) => state.currentStatus === "running").length;
   const projectMemoryUsage = processStates.reduce((total, state) => total + (state.memoryUsage ?? 0), 0);
+
+  useEffect(() => {
+    if (!project) return;
+    setProjectNameDraft(project.name);
+    setIconDraft(project.icon ?? project.name.slice(0, 2).toUpperCase());
+    setEditingProjectName(false);
+  }, [project?.id, project?.name, project?.icon]);
 
   if (!project) {
     return (
@@ -123,21 +136,76 @@ export function ProjectDetailView() {
     await navigator.clipboard.writeText(project.rootPath);
   };
 
+  const saveProjectName = async () => {
+    const name = projectNameDraft.trim();
+    if (!name || name === project.name) {
+      setProjectNameDraft(project.name);
+      setEditingProjectName(false);
+      return;
+    }
+    await updateProject({ ...project, name });
+    setEditingProjectName(false);
+  };
+
+  const patchNotifications = async (notificationsEnabled: boolean) => {
+    if (!settings) return;
+    if (notificationsEnabled && !(await ensureNotificationPermission())) return;
+    await updateSettings({ ...settings, notificationsEnabled });
+  };
+
+  const commitIcon = async () => {
+    const icon = iconDraft.trim().slice(0, 4);
+    setIconDraft(icon || project.name.slice(0, 2).toUpperCase());
+    await updateProject({ ...project, icon: icon || undefined });
+  };
+
   return (
     <main className="solo-project-show">
       <header className="solo-project-topbar">
         <div className="solo-project-title">
-          <h2>{project.name}</h2>
-          <button type="button" title="Edit project name">
-            <Edit3 size={13} />
-          </button>
+          {editingProjectName ? (
+            <span className="solo-project-name-editor">
+              <input
+                value={projectNameDraft}
+                autoFocus
+                onChange={(event) => setProjectNameDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") void saveProjectName();
+                  if (event.key === "Escape") {
+                    setProjectNameDraft(project.name);
+                    setEditingProjectName(false);
+                  }
+                }}
+              />
+              <button type="button" onClick={saveProjectName} title="Save project name">
+                <Check size={13} />
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setProjectNameDraft(project.name);
+                  setEditingProjectName(false);
+                }}
+                title="Cancel"
+              >
+                <X size={13} />
+              </button>
+            </span>
+          ) : (
+            <>
+              <h2>{project.name}</h2>
+              <button type="button" onClick={() => setEditingProjectName(true)} title="Edit project name">
+                <Edit3 size={13} />
+              </button>
+            </>
+          )}
           <span className="solo-running-pill">
             <span />
             {runningCount}/{projectProcesses.length} Running
           </span>
         </div>
         <div className="solo-project-actions">
-          <button type="button" onClick={() => startProject(project.id)}>
+          <button type="button" onClick={() => startAutoStartProcesses(project.id)} disabled={!projectProcesses.some((process) => process.autoStart)}>
             <Play size={14} />
             Start auto-starting
           </button>
@@ -189,7 +257,11 @@ export function ProjectDetailView() {
 
           <SoloSection title="Settings">
             <div className="solo-detail-card">
-              <SoloDetailRow title="Auto Start" subtitle="Auto-start commands will run when this app launches" actions={<SoloSwitch checked={project.autoStart} />} />
+              <SoloDetailRow
+                title="Auto Start"
+                subtitle="Auto-start commands will run when this app launches"
+                actions={<SoloSwitch checked={project.autoStart} onChange={(autoStart) => updateProject({ ...project, autoStart })} />}
+              />
               <SoloDetailRow
                 title="Project RAM cap"
                 subtitle="Stop project commands when combined usage crosses this cap"
@@ -197,21 +269,31 @@ export function ProjectDetailView() {
                 actions={<MemoryLimitInput value={project.memoryLimitMb} onCommit={(memoryLimitMb) => updateProject({ ...project, memoryLimitMb })} />}
               />
               <SoloDetailRow
-                title="Editor"
-                subtitle="Override the default editor for this project"
-                actions={
-                  <button type="button" className="solo-select-button">
-                    use default
-                  </button>
-                }
-              />
-              <SoloDetailRow
                 title="Icon"
                 subtitle="Display a small icon next to the project name"
                 actions={
                   <span className="solo-icon-control">
-                    <span className="solo-mark">{project.name.slice(0, 2).toUpperCase()}</span>
-                    <button type="button">customize</button>
+                    <span className="solo-mark" style={{ backgroundColor: project.color ?? undefined }}>
+                      {(project.icon ?? project.name.slice(0, 2)).slice(0, 4).toUpperCase()}
+                    </span>
+                    <input
+                      className="solo-icon-input"
+                      value={iconDraft}
+                      maxLength={4}
+                      onChange={(event) => setIconDraft(event.target.value)}
+                      onBlur={commitIcon}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") event.currentTarget.blur();
+                      }}
+                      title="Project icon text"
+                    />
+                    <input
+                      className="solo-color-input"
+                      type="color"
+                      value={project.color ?? "#32d583"}
+                      onChange={(event) => updateProject({ ...project, color: event.target.value })}
+                      title="Project color"
+                    />
                   </span>
                 }
               />
@@ -220,8 +302,16 @@ export function ProjectDetailView() {
 
           <SoloSection title="Notifications">
             <div className="solo-detail-card">
-              <SoloDetailRow title="Crash & exit alerts" subtitle="Get notified when commands crash or exit unexpectedly" actions={<SoloSwitch checked />} />
-              <SoloDetailRow title="Terminal alerts" subtitle="Get notified when commands ring the bell or request attention" actions={<SoloSwitch checked />} />
+              <SoloDetailRow
+                title="Crash & exit alerts"
+                subtitle="Get notified when commands crash or exit unexpectedly"
+                actions={<SoloSwitch checked={settings?.notificationsEnabled ?? false} onChange={patchNotifications} />}
+              />
+              <SoloDetailRow
+                title="Health check alerts"
+                subtitle="Use the global notification setting for degraded commands"
+                actions={<SoloSwitch checked={settings?.notificationsEnabled ?? false} onChange={patchNotifications} />}
+              />
             </div>
           </SoloSection>
 
@@ -473,11 +563,12 @@ function MemoryLimitInput({
   );
 }
 
-function SoloSwitch({ checked }: { checked: boolean }) {
+function SoloSwitch({ checked, onChange }: { checked: boolean; onChange: (checked: boolean) => void }) {
   return (
-    <span className={`solo-switch ${checked ? "checked" : ""}`} aria-hidden="true">
+    <label className={`solo-switch ${checked ? "checked" : ""}`}>
+      <input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} />
       <span />
-    </span>
+    </label>
   );
 }
 

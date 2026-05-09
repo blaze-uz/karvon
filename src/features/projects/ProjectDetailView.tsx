@@ -1,6 +1,6 @@
-import { Check, Copy, Edit3, FolderOpen, Play, Plus, RefreshCw, RotateCcw, Square, Trash2, X } from "lucide-react";
+import { AlertTriangle, Check, Copy, Edit3, FolderOpen, Play, Plus, RefreshCw, RotateCcw, Square, Trash2, X } from "lucide-react";
 import type { ReactNode } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { StatusBadge } from "../../components/StatusBadge";
 import { useConfirm } from "../../components/ConfirmDialog";
 import { RuntimeDot } from "../../components/RuntimeDot";
@@ -61,6 +61,7 @@ export function ProjectDetailView() {
   const externalProcesses = useOrchestratorStore((state) => state.externalProcesses);
   const loadExternalProcesses = useOrchestratorStore((state) => state.loadExternalProcesses);
   const stopExternalProcess = useOrchestratorStore((state) => state.stopExternalProcess);
+  const logs = useOrchestratorStore((state) => state.logs);
   const confirm = useConfirm();
   const [formOpen, setFormOpen] = useState(false);
   const [draft, setDraft] = useState<ProcessFormInput | null>(null);
@@ -72,6 +73,47 @@ export function ProjectDetailView() {
   const project = useMemo(() => projects.find((item) => item.id === selectedProjectId), [projects, selectedProjectId]);
   const projectProcesses = useMemo(() => processes.filter((process) => process.projectId === selectedProjectId), [processes, selectedProjectId]);
   const projectExternals = selectedProjectId ? externalProcesses[selectedProjectId] ?? [] : [];
+  const conflictingPorts = useMemo(() => {
+    if (!selectedProjectId) return [] as number[];
+    const ports = new Set<number>();
+    for (const log of logs) {
+      if (log.projectId !== selectedProjectId) continue;
+      const port = extractConflictingPort(log.message);
+      if (port) ports.add(port);
+    }
+    return [...ports];
+  }, [logs, selectedProjectId]);
+  const [portHolders, setPortHolders] = useState<Record<number, ExternalProcess | null | "loading">>({});
+  const fetchedPortsRef = useRef<Set<number>>(new Set());
+
+  useEffect(() => {
+    setPortHolders({});
+    fetchedPortsRef.current.clear();
+  }, [selectedProjectId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    for (const port of conflictingPorts) {
+      if (fetchedPortsRef.current.has(port)) continue;
+      fetchedPortsRef.current.add(port);
+      setPortHolders((prev) => ({ ...prev, [port]: "loading" }));
+      api.findProcessOnPort(port).then((response) => {
+        if (cancelled) return;
+        const holder = response.success ? response.data ?? null : null;
+        setPortHolders((prev) => ({ ...prev, [port]: holder }));
+      });
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [conflictingPorts]);
+
+  const refreshPortHolder = async (port: number) => {
+    setPortHolders((prev) => ({ ...prev, [port]: "loading" }));
+    const response = await api.findProcessOnPort(port);
+    const holder = response.success ? response.data ?? null : null;
+    setPortHolders((prev) => ({ ...prev, [port]: holder }));
+  };
   const processStates = useMemo(
     () => projectProcesses.map((process) => runtimeStates[process.id]).filter((state): state is ProcessRuntimeState => Boolean(state)),
     [projectProcesses, runtimeStates]
@@ -325,6 +367,36 @@ export function ProjectDetailView() {
               />
             </div>
           </SoloSection>
+
+          {conflictingPorts.length ? (
+            <SoloSection title="Port conflicts">
+              <div className="solo-detail-card">
+                {conflictingPorts.map((port) => {
+                  const holder = portHolders[port];
+                  return (
+                    <PortConflictRow
+                      key={port}
+                      port={port}
+                      holder={holder}
+                      onRefresh={() => void refreshPortHolder(port)}
+                      onStop={async () => {
+                        if (!holder || holder === "loading") return;
+                        const ok = await confirm({
+                          title: `Stop process holding port ${port}?`,
+                          message: `${holder.command} (pid ${holder.pid})\n${holder.cwd || ""}`,
+                          confirmLabel: "Stop",
+                          danger: true,
+                        });
+                        if (!ok) return;
+                        await stopExternalProcess(project.id, holder.processGroupId);
+                        void refreshPortHolder(port);
+                      }}
+                    />
+                  );
+                })}
+              </div>
+            </SoloSection>
+          ) : null}
 
           <SoloSection
             title="Commands"
@@ -633,6 +705,59 @@ function SoloSwitch({ checked, onChange }: { checked: boolean; onChange: (checke
 
 function formatProcessCommand(process: ProcessDefinition) {
   return [process.command, ...process.args].filter(Boolean).join(" ") || process.key;
+}
+
+function extractConflictingPort(message: string): number | null {
+  if (!/address already in use|EADDRINUSE/i.test(message)) return null;
+  const tuple = message.match(/,\s*(\d{2,5})\s*\)/);
+  if (tuple) {
+    const port = Number(tuple[1]);
+    if (port > 0 && port < 65536) return port;
+  }
+  const colon = message.match(/:(\d{2,5})\b/);
+  if (colon) {
+    const port = Number(colon[1]);
+    if (port > 0 && port < 65536) return port;
+  }
+  return null;
+}
+
+function PortConflictRow({
+  port,
+  holder,
+  onStop,
+  onRefresh
+}: {
+  port: number;
+  holder: ExternalProcess | null | "loading" | undefined;
+  onStop: () => void;
+  onRefresh: () => void;
+}) {
+  return (
+    <div className="solo-command-row">
+      <span className="solo-command-main" style={{ cursor: "default" }}>
+        <AlertTriangle size={14} />
+        <span>
+          <strong>Port {port}</strong>
+          <small>
+            {holder === "loading" || holder === undefined
+              ? "Looking up holder…"
+              : holder === null
+                ? "No process found (already free)"
+                : `${holder.command || "?"} — pid ${holder.pid}${holder.cwd ? ` — ${formatPath(holder.cwd)}` : ""}`}
+          </small>
+        </span>
+      </span>
+      <span className="solo-command-actions">
+        <button type="button" onClick={onRefresh} title="Re-check">
+          <RefreshCw size={14} />
+        </button>
+        <button type="button" onClick={onStop} disabled={!holder || holder === "loading"} title="Stop holder">
+          <Square size={14} />
+        </button>
+      </span>
+    </div>
+  );
 }
 
 function ExternalProcessRow({ external, onStop }: { external: ExternalProcess; onStop: () => void }) {

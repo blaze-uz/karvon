@@ -936,6 +936,66 @@ pub async fn stop_external_process(
     ApiResponse::ok(true)
 }
 
+pub async fn find_process_on_port(port: u16) -> ApiResponse<Option<ExternalProcess>> {
+    let output = Command::new("lsof")
+        .arg(format!("-iTCP:{port}"))
+        .arg("-sTCP:LISTEN")
+        .arg("-P")
+        .arg("-n")
+        .arg("-Fpcg")
+        .stderr(Stdio::null())
+        .output()
+        .await;
+    let Ok(output) = output else {
+        return ApiResponse::ok(None);
+    };
+    if output.stdout.is_empty() {
+        return ApiResponse::ok(None);
+    }
+    let text = String::from_utf8_lossy(&output.stdout).into_owned();
+
+    let mut pid: Option<u32> = None;
+    let mut pgid: Option<u32> = None;
+    let mut command: Option<String> = None;
+    let mut found: Option<ExternalProcess> = None;
+
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix('p') {
+            if let (Some(p), Some(g)) = (pid, pgid) {
+                let cwd = process_cwd(p).await.unwrap_or_default();
+                found = Some(ExternalProcess {
+                    pid: p,
+                    process_group_id: g,
+                    command: command.clone().unwrap_or_default(),
+                    cwd,
+                });
+                break;
+            }
+            pid = rest.trim().parse().ok();
+            pgid = None;
+            command = None;
+        } else if let Some(rest) = line.strip_prefix('g') {
+            pgid = rest.trim().parse().ok();
+        } else if let Some(rest) = line.strip_prefix('c') {
+            command = Some(rest.to_string());
+        }
+    }
+
+    if found.is_none() {
+        if let (Some(p), Some(g)) = (pid, pgid) {
+            let cwd = process_cwd(p).await.unwrap_or_default();
+            found = Some(ExternalProcess {
+                pid: p,
+                process_group_id: g,
+                command: command.unwrap_or_default(),
+                cwd,
+            });
+        }
+    }
+
+    ApiResponse::ok(found)
+}
+
 async fn list_all_process_cwds() -> HashMap<u32, String> {
     let output = Command::new("lsof")
         .arg("-d")

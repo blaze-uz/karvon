@@ -408,6 +408,10 @@ class MockApi {
     return Promise.resolve(this.ok(true));
   }
 
+  findProcessOnPort(_port: number) {
+    return Promise.resolve(this.ok(null));
+  }
+
   getRuntimeState(processId: ID) {
     return Promise.resolve(this.ok(this.runtime.get(processId) ?? this.defaultRuntime(processId)));
   }

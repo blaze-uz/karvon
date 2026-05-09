@@ -67,6 +67,7 @@ export const api = {
   restartFailedProcesses: (projectId?: ID) => command<ProcessRuntimeState[]>("restart_failed_processes", { projectId }),
   listExternalProjectProcesses: (projectId: ID) => command<ExternalProcess[]>("list_external_project_processes", { projectId }),
   stopExternalProcess: (processGroupId: number) => command<boolean>("stop_external_process", { processGroupId }),
+  findProcessOnPort: (port: number) => command<ExternalProcess | null>("find_process_on_port", { port }),
   getRuntimeState: (processId: ID) => command<ProcessRuntimeState>("get_runtime_state", { processId }),
   getAllRuntimeStates: () => command<ProcessRuntimeState[]>("get_all_runtime_states"),
   getLogHistory: (filters?: LogHistoryRequest) => command<LogEntry[]>("get_log_history", { filters }),

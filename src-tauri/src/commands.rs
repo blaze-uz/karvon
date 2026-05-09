@@ -499,6 +499,13 @@ pub async fn stop_external_process(process_group_id: u32) -> ApiResponse<bool> {
 }
 
 #[tauri::command]
+pub async fn find_process_on_port(
+    port: u16,
+) -> ApiResponse<Option<crate::models::ExternalProcess>> {
+    process_manager::find_process_on_port(port).await
+}
+
+#[tauri::command]
 pub async fn restart_failed_processes(
     app: AppHandle,
     project_id: Option<Id>,

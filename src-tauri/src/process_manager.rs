@@ -888,9 +888,17 @@ pub async fn list_external_project_processes(
     let cwds = list_all_process_cwds().await;
     let self_pid = std::process::id();
 
-    let mut results = Vec::new();
+    let mut rows_by_group: HashMap<u32, Vec<ExternalProcessRow>> = HashMap::new();
+    for row in &rows {
+        rows_by_group
+            .entry(row.process_group_id)
+            .or_default()
+            .push(row.clone());
+    }
+
+    let mut leaders: Vec<ExternalProcessRow> = Vec::new();
     let mut seen_groups: HashSet<u32> = HashSet::new();
-    for row in rows {
+    for row in &rows {
         if row.pid == self_pid {
             continue;
         }
@@ -906,11 +914,41 @@ pub async fn list_external_project_processes(
         if !seen_groups.insert(row.process_group_id) {
             continue;
         }
+        leaders.push(row.clone());
+    }
+
+    let leader_pids: Vec<u32> = leaders.iter().map(|r| r.pid).collect();
+    let ports_by_pid = list_listening_ports(&leader_pids).await;
+
+    let mut results = Vec::with_capacity(leaders.len());
+    for leader in leaders {
+        let cwd = cwds.get(&leader.pid).cloned().unwrap_or_default();
+        let children: Vec<crate::models::ExternalProcessChild> = rows_by_group
+            .get(&leader.process_group_id)
+            .map(|group_rows| {
+                group_rows
+                    .iter()
+                    .filter(|r| r.pid != leader.pid)
+                    .map(|r| crate::models::ExternalProcessChild {
+                        pid: r.pid,
+                        command: r.command.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let ports = ports_by_pid.get(&leader.pid).cloned().unwrap_or_default();
         results.push(ExternalProcess {
-            pid: row.pid,
-            process_group_id: row.process_group_id,
-            command: row.command.clone(),
-            cwd: cwd.clone(),
+            pid: leader.pid,
+            process_group_id: leader.process_group_id,
+            command: leader.command,
+            cwd,
+            user: leader.user,
+            started_at: leader.started_at,
+            etime: leader.etime,
+            cpu_percent: leader.cpu_percent,
+            memory_kb: leader.memory_kb,
+            ports,
+            children,
         });
     }
     ApiResponse::ok(results)
@@ -1009,6 +1047,59 @@ pub async fn find_process_on_port(port: u16) -> ApiResponse<Option<ExternalProce
     }
 
     ApiResponse::ok(found)
+}
+
+async fn list_listening_ports(pids: &[u32]) -> HashMap<u32, Vec<u32>> {
+    if pids.is_empty() {
+        return HashMap::new();
+    }
+    let pid_arg = pids
+        .iter()
+        .map(|p| p.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let output = Command::new("lsof")
+        .arg("-iTCP")
+        .arg("-sTCP:LISTEN")
+        .arg("-P")
+        .arg("-n")
+        .arg("-Fpn")
+        .arg("-p")
+        .arg(pid_arg)
+        .stderr(Stdio::null())
+        .output()
+        .await;
+    let Ok(output) = output else {
+        return HashMap::new();
+    };
+    if output.stdout.is_empty() {
+        return HashMap::new();
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut result: HashMap<u32, Vec<u32>> = HashMap::new();
+    let mut current_pid: Option<u32> = None;
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix('p') {
+            current_pid = rest.trim().parse().ok();
+        } else if let Some(rest) = line.strip_prefix('n') {
+            let Some(pid) = current_pid else {
+                continue;
+            };
+            // rest looks like "*:8000" or "127.0.0.1:8765" or "[::1]:3000"
+            let port_str = rest.rsplit(':').next().unwrap_or("");
+            let Ok(port) = port_str.parse::<u32>() else {
+                continue;
+            };
+            let entry = result.entry(pid).or_default();
+            if !entry.contains(&port) {
+                entry.push(port);
+            }
+        }
+    }
+    for ports in result.values_mut() {
+        ports.sort_unstable();
+    }
+    result
 }
 
 async fn list_all_process_cwds() -> HashMap<u32, String> {
@@ -1290,6 +1381,11 @@ struct ExternalProcessRow {
     process_group_id: u32,
     stat: String,
     command: String,
+    user: String,
+    memory_kb: u64,
+    cpu_percent: f32,
+    etime: String,
+    started_at: String,
 }
 
 async fn list_live_processes() -> Vec<ExternalProcessRow> {
@@ -1300,7 +1396,17 @@ async fn list_live_processes() -> Vec<ExternalProcessRow> {
         .arg("-o")
         .arg("pgid=")
         .arg("-o")
+        .arg("user=")
+        .arg("-o")
+        .arg("rss=")
+        .arg("-o")
+        .arg("pcpu=")
+        .arg("-o")
+        .arg("etime=")
+        .arg("-o")
         .arg("stat=")
+        .arg("-o")
+        .arg("lstart=")
         .arg("-o")
         .arg("command=")
         .stderr(Stdio::null())
@@ -1345,12 +1451,29 @@ async fn find_external_process_match(
 fn parse_external_process_row(line: &str) -> Option<ExternalProcessRow> {
     let (pid, remainder) = take_process_token(line.trim_start())?;
     let (process_group_id, remainder) = take_process_token(remainder)?;
-    let (stat, command) = take_process_token(remainder)?;
+    let (user, remainder) = take_process_token(remainder)?;
+    let (rss, remainder) = take_process_token(remainder)?;
+    let (pcpu, remainder) = take_process_token(remainder)?;
+    let (etime, remainder) = take_process_token(remainder)?;
+    let (stat, remainder) = take_process_token(remainder)?;
+    // lstart is a fixed 5-token timestamp like "Sat May 10 12:34:56 2026"
+    let mut lstart_tokens: Vec<&str> = Vec::with_capacity(5);
+    let mut cursor = remainder;
+    for _ in 0..5 {
+        let (token, rest) = take_process_token(cursor)?;
+        lstart_tokens.push(token);
+        cursor = rest;
+    }
     Some(ExternalProcessRow {
         pid: pid.parse().ok()?,
         process_group_id: process_group_id.parse().ok()?,
         stat: stat.to_string(),
-        command: command.trim_start().to_string(),
+        command: cursor.trim_start().to_string(),
+        user: user.to_string(),
+        memory_kb: rss.parse().unwrap_or(0),
+        cpu_percent: pcpu.parse().unwrap_or(0.0),
+        etime: etime.to_string(),
+        started_at: lstart_tokens.join(" "),
     })
 }
 

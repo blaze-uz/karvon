@@ -519,7 +519,7 @@ body.is-resizing-sidebar {
 }
 
 .solo-project-row {
-  grid-template-columns: 14px 18px minmax(0, 1fr) auto;
+  grid-template-columns: 14px 18px minmax(0, 1fr) auto auto;
   min-height: 28px;
   font-weight: 500;
 }
@@ -579,7 +579,6 @@ body.is-resizing-sidebar {
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  margin-left: auto;
 }
 
 .solo-badge {

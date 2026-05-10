@@ -283,6 +283,27 @@ pub struct ExternalProcess {
     pub process_group_id: u32,
     pub command: String,
     pub cwd: String,
+    #[serde(default)]
+    pub user: String,
+    #[serde(default)]
+    pub started_at: String,
+    #[serde(default)]
+    pub etime: String,
+    #[serde(default)]
+    pub cpu_percent: f32,
+    #[serde(default)]
+    pub memory_kb: u64,
+    #[serde(default)]
+    pub ports: Vec<u32>,
+    #[serde(default)]
+    pub children: Vec<ExternalProcessChild>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalProcessChild {
+    pub pid: u32,
+    pub command: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

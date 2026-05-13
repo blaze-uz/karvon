@@ -1,8 +1,8 @@
 use crate::{
     mediaguard_preset,
     models::{
-        ApiError, ApiResponse, AppConfig, AppSettings, DashboardSummary, Id, ProcessDefinition,
-        ProcessFormInput, Project, ProjectFormInput, ValidationResult, Workspace,
+        ApiError, ApiResponse, AppConfig, AppSettings, DashboardSummary, Id, MetricSample,
+        ProcessDefinition, ProcessFormInput, Project, ProjectFormInput, ValidationResult, Workspace,
     },
     process_manager,
     state::{app_state, AppState},
@@ -420,6 +420,12 @@ pub async fn delete_process_definition(app: AppHandle, process_id: Id) -> ApiRes
         ),
     );
     state.runtime.states.write().await.remove(&process.id);
+    state
+        .runtime
+        .metrics_history
+        .write()
+        .await
+        .remove(&process.id);
     {
         let mut pids = state.runtime.pids.write().await;
         let mut records = state.runtime.process_records.write().await;
@@ -525,6 +531,17 @@ pub async fn get_all_runtime_states(
     let state = app_state();
     process_manager::sync_external_processes(app, state.clone()).await;
     process_manager::get_all_runtime_states(state).await
+}
+
+#[tauri::command]
+pub async fn get_process_metrics_history(process_id: Id) -> ApiResponse<Vec<MetricSample>> {
+    let state = app_state();
+    let history = state.runtime.metrics_history.read().await;
+    let samples = history
+        .get(&process_id)
+        .map(|buffer| buffer.iter().cloned().collect())
+        .unwrap_or_default();
+    ApiResponse::ok(samples)
 }
 
 #[tauri::command]

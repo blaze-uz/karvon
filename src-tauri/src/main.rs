@@ -98,6 +98,7 @@ pub fn run() {
             commands::find_process_on_port,
             commands::get_runtime_state,
             commands::get_all_runtime_states,
+            commands::get_process_metrics_history,
             commands::get_log_history,
             commands::subscribe_logs,
             commands::unsubscribe_logs,

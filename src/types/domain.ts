@@ -143,6 +143,12 @@ export interface ProcessRuntimeState {
   currentStatus: ProcessStatus;
 }
 
+export interface MetricSample {
+  timestamp: string;
+  cpuUsage?: number;
+  memoryUsage?: number;
+}
+
 export interface LogEntry {
   id: ID;
   processId: ID;

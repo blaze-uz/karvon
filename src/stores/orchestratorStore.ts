@@ -10,6 +10,7 @@ import type {
   ID,
   LogEntry,
   LogFilters,
+  MetricSample,
   ProcessDefinition,
   ProcessFormInput,
   ProcessRuntimeState,
@@ -49,6 +50,7 @@ interface OrchestratorState {
   externalProcesses: Record<ID, ExternalProcess[]>;
   logs: LogEntry[];
   activity: ActivityEvent[];
+  metricsHistory: Record<ID, MetricSample[]>;
   settings?: AppSettings;
   selectedWorkspaceId?: ID;
   selectedProjectId?: ID;
@@ -62,6 +64,7 @@ interface OrchestratorState {
   initialize: () => Promise<void>;
   refreshAll: () => Promise<void>;
   refreshDashboard: () => Promise<void>;
+  loadMetricsHistory: (processId: ID) => Promise<void>;
   selectView: (view: ViewKey) => void;
   selectProject: (projectId: ID) => Promise<void>;
   selectProcess: (processId: ID) => void;
@@ -107,9 +110,41 @@ const defaultLogFilters: LogFilters = {
   paused: false
 };
 const LOG_HISTORY_WINDOW_MS = 5 * 60 * 1000;
+const METRICS_HISTORY_WINDOW_MS = 10 * 60 * 1000;
+const METRICS_HISTORY_HARD_CAP = 400;
 
 function recentLogHistorySince() {
   return new Date(Date.now() - LOG_HISTORY_WINDOW_MS).toISOString();
+}
+
+let dashboardRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+function scheduleDashboardRefresh(refresh: () => Promise<void>) {
+  if (dashboardRefreshTimer) return;
+  dashboardRefreshTimer = setTimeout(() => {
+    dashboardRefreshTimer = null;
+    void refresh();
+  }, 300);
+}
+
+function appendMetricsSample(
+  history: Record<ID, MetricSample[]>,
+  runtime: ProcessRuntimeState
+): Record<ID, MetricSample[]> {
+  if (runtime.cpuUsage === undefined && runtime.memoryUsage === undefined) return history;
+  const cutoffMs = Date.now() - METRICS_HISTORY_WINDOW_MS;
+  const prev = history[runtime.processId] ?? [];
+  const sample: MetricSample = {
+    timestamp: new Date().toISOString(),
+    cpuUsage: runtime.cpuUsage,
+    memoryUsage: runtime.memoryUsage
+  };
+  let startIdx = 0;
+  while (startIdx < prev.length && Date.parse(prev[startIdx].timestamp) < cutoffMs) startIdx += 1;
+  const trimmed = startIdx === 0 ? prev : prev.slice(startIdx);
+  const next = trimmed.length + 1 > METRICS_HISTORY_HARD_CAP
+    ? [...trimmed.slice(trimmed.length + 1 - METRICS_HISTORY_HARD_CAP), sample]
+    : [...trimmed, sample];
+  return { ...history, [runtime.processId]: next };
 }
 
 function mergeRuntime(states: ProcessRuntimeState[]) {
@@ -147,6 +182,7 @@ export const useOrchestratorStore = create<OrchestratorState>((set, get) => ({
   externalProcesses: {},
   logs: [],
   activity: [],
+  metricsHistory: {},
   projectFilters: defaultProjectFilters,
   logFilters: defaultLogFilters,
   initialize: async () => {
@@ -162,7 +198,7 @@ export const useOrchestratorStore = create<OrchestratorState>((set, get) => ({
     const updateRuntime = (runtime: ProcessRuntimeState) => {
       if (!runtime?.processId) return;
       set((state) => ({ runtimeStates: { ...state.runtimeStates, [runtime.processId]: runtime } }));
-      void get().refreshDashboard();
+      scheduleDashboardRefresh(get().refreshDashboard);
     };
     api.on<ProcessRuntimeState>("process_started", updateRuntime);
     api.on<ProcessRuntimeState>("process_stopped", updateRuntime);
@@ -170,7 +206,10 @@ export const useOrchestratorStore = create<OrchestratorState>((set, get) => ({
     api.on<ProcessRuntimeState>("process_health_changed", updateRuntime);
     api.on<ProcessRuntimeState>("process_metrics_changed", (runtime) => {
       if (!runtime?.processId) return;
-      set((state) => ({ runtimeStates: { ...state.runtimeStates, [runtime.processId]: runtime } }));
+      set((state) => ({
+        runtimeStates: { ...state.runtimeStates, [runtime.processId]: runtime },
+        metricsHistory: appendMetricsSample(state.metricsHistory, runtime)
+      }));
     });
     await get().refreshAll();
     set({ booted: true });
@@ -207,6 +246,14 @@ export const useOrchestratorStore = create<OrchestratorState>((set, get) => ({
       set({ dashboard: await api.getDashboardSummary().then(unwrap) });
     } catch {
       // Dashboard updates are secondary to runtime actions.
+    }
+  },
+  loadMetricsHistory: async (processId) => {
+    try {
+      const samples = await api.getProcessMetricsHistory(processId).then(unwrap);
+      set((state) => ({ metricsHistory: { ...state.metricsHistory, [processId]: samples } }));
+    } catch {
+      // Metrics history is best-effort; do not surface as a global error.
     }
   },
   selectView: (view) => set({ view }),

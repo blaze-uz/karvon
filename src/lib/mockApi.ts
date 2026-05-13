@@ -6,6 +6,7 @@ import type {
   DashboardSummary,
   ID,
   LogEntry,
+  MetricSample,
   ProcessDefinition,
   ProcessFormInput,
   ProcessRuntimeState,
@@ -418,6 +419,24 @@ class MockApi {
 
   getAllRuntimeStates() {
     return Promise.resolve(this.ok([...this.runtime.values()]));
+  }
+
+  getProcessMetricsHistory(processId: ID) {
+    const samples: MetricSample[] = [];
+    const nowMs = Date.now();
+    const runtime = this.runtime.get(processId);
+    const baseMemory = runtime?.memoryUsage ?? 256 * 1024 * 1024;
+    const baseCpu = runtime?.cpuUsage ?? 12;
+    for (let i = 1800; i >= 0; i -= 1) {
+      const timestamp = new Date(nowMs - i * 2000).toISOString();
+      const wobble = Math.sin(i / 30) * 0.25 + Math.random() * 0.15;
+      samples.push({
+        timestamp,
+        cpuUsage: Math.max(0, baseCpu + baseCpu * wobble),
+        memoryUsage: Math.max(0, Math.round(baseMemory * (1 + wobble * 0.1)))
+      });
+    }
+    return Promise.resolve(this.ok(samples));
   }
 
   getLogHistory(filters: { projectId?: ID; processId?: ID; limit?: number; since?: string } = {}) {

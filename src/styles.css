@@ -1380,7 +1380,7 @@ small {
 .process-inspector-page {
   min-height: 0;
   align-content: stretch;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto auto minmax(0, 1fr);
   gap: 10px;
   padding: 14px 16px;
 }
@@ -1486,6 +1486,87 @@ small {
   color: var(--text);
   font-size: 12px;
   font-weight: 500;
+}
+
+.process-metrics-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.metric-sparkline {
+  min-width: 0;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  display: grid;
+  grid-template-rows: auto 1fr;
+}
+
+.metric-sparkline header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-subtle);
+}
+
+.metric-sparkline-label {
+  color: var(--muted);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.metric-sparkline-value {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.metric-sparkline-chart {
+  position: relative;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.metric-sparkline-chart svg {
+  display: block;
+  width: 100%;
+}
+
+.metric-sparkline-empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.metric-sparkline-tooltip {
+  position: absolute;
+  top: 6px;
+  display: grid;
+  gap: 1px;
+  padding: 4px 8px;
+  border-radius: var(--radius);
+  background: var(--mono-bg);
+  color: var(--mono-text);
+  pointer-events: none;
+  font-size: 11px;
+  line-height: 1.3;
+  white-space: nowrap;
+  box-shadow: var(--soft-shadow);
+}
+
+.metric-sparkline-tooltip strong {
+  color: var(--mono-text);
+  font-weight: 600;
+}
+
+.metric-sparkline-tooltip span {
+  color: var(--mono-muted);
 }
 
 .process-inspector-grid {
@@ -3402,6 +3483,7 @@ button.danger-button:hover {
 
   .compact-status-strip,
   .process-summary-strip,
+  .process-metrics-row,
   .form-grid,
   .log-filter-bar {
     grid-template-columns: 1fr;

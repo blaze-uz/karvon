@@ -2,9 +2,9 @@ use crate::{
     health,
     models::{
         ApiError, ApiResponse, DashboardSummary, ExternalProcess, HealthStatus, Id, LogEntry,
-        LogHistoryFilters, LogLevel, PortBinding, ProcessDefinition, ProcessRuntimeState,
-        ProcessStatus, Project, ProjectDetail, ProjectStatus, RestartPolicy, RestartPolicyKind,
-        RuntimeProcessRecord, StreamType,
+        LogHistoryFilters, LogLevel, MetricSample, PortBinding, ProcessDefinition,
+        ProcessRuntimeState, ProcessStatus, Project, ProjectDetail, ProjectStatus, RestartPolicy,
+        RestartPolicyKind, RuntimeProcessRecord, StreamType,
     },
     state::AppState,
     storage,
@@ -2259,12 +2259,10 @@ async fn mark_spawn_failure(
 }
 
 async fn set_runtime(app: &AppHandle, state: &AppState, runtime: ProcessRuntimeState, event: &str) {
-    state
-        .runtime
-        .states
-        .write()
-        .await
-        .insert(runtime.process_id.clone(), runtime.clone());
+    {
+        let mut states = state.runtime.states.write().await;
+        states.insert(runtime.process_id.clone(), runtime.clone());
+    }
     let _ = app.emit(event, runtime.clone());
     maybe_notify_runtime_event(app, state, event, &runtime).await;
 }
@@ -2498,7 +2496,7 @@ fn spawn_memory_monitor(
                 pid = tracked_record.pid;
             }
 
-            let Some(memory_usage) = read_process_memory_usage(pid).await else {
+            let Some((memory_usage, cpu_usage)) = read_process_metrics(pid).await else {
                 let process_group_id = normalized_process_group_id(&tracked_record);
                 if let Some(live_pid) = live_process_in_group(process_group_id).await {
                     update_tracked_process_pid(&state, &process_id, live_pid, process_group_id)
@@ -2534,7 +2532,8 @@ fn spawn_memory_monitor(
                 break;
             };
 
-            update_process_memory_usage(&app, &state, &process_id, memory_usage).await;
+            update_process_metrics(&app, &state, &process_id, memory_usage, cpu_usage).await;
+            append_metric_sample(&state, &process_id, memory_usage, cpu_usage).await;
 
             if let Some(limit_mb) = process.memory_limit_mb {
                 let limit_bytes = mb_to_bytes(limit_mb);
@@ -2565,10 +2564,10 @@ fn spawn_memory_monitor(
     });
 }
 
-async fn read_process_memory_usage(pid: u32) -> Option<u64> {
+async fn read_process_metrics(pid: u32) -> Option<(u64, Option<f64>)> {
     let output = Command::new("ps")
         .arg("-o")
-        .arg("rss=")
+        .arg("rss=,pcpu=")
         .arg("-p")
         .arg(pid.to_string())
         .stderr(Stdio::null())
@@ -2579,8 +2578,10 @@ async fn read_process_memory_usage(pid: u32) -> Option<u64> {
         return None;
     }
     let output = String::from_utf8_lossy(&output.stdout);
-    let rss_kb = output.split_whitespace().next()?.parse::<u64>().ok()?;
-    Some(rss_kb.saturating_mul(1024))
+    let mut tokens = output.split_whitespace();
+    let rss_kb = tokens.next()?.parse::<u64>().ok()?;
+    let cpu_usage = tokens.next().and_then(|token| token.parse::<f64>().ok());
+    Some((rss_kb.saturating_mul(1024), cpu_usage))
 }
 
 async fn config_project_process_pair(
@@ -2602,11 +2603,12 @@ async fn config_project_process_pair(
     Some((project, process))
 }
 
-async fn update_process_memory_usage(
+async fn update_process_metrics(
     app: &AppHandle,
     state: &AppState,
     process_id: &str,
     memory_usage: u64,
+    cpu_usage: Option<f64>,
 ) {
     let Some(mut runtime) = state.runtime.states.read().await.get(process_id).cloned() else {
         return;
@@ -2617,8 +2619,64 @@ async fn update_process_memory_usage(
     ) {
         return;
     }
+    let prev_memory = runtime.memory_usage;
+    let prev_cpu = runtime.cpu_usage;
     runtime.memory_usage = Some(memory_usage);
+    if cpu_usage.is_some() {
+        runtime.cpu_usage = cpu_usage;
+    }
+    if !metrics_delta_significant(prev_memory, memory_usage, prev_cpu, cpu_usage) {
+        return;
+    }
     set_runtime(app, state, runtime, "process_metrics_changed").await;
+}
+
+fn metrics_delta_significant(
+    prev_memory: Option<u64>,
+    new_memory: u64,
+    prev_cpu: Option<f64>,
+    new_cpu: Option<f64>,
+) -> bool {
+    let memory_changed = match prev_memory {
+        None => true,
+        Some(prev) => {
+            let threshold = (prev / 100).max(1_048_576);
+            new_memory.abs_diff(prev) >= threshold
+        }
+    };
+    let cpu_changed = match (prev_cpu, new_cpu) {
+        (None, Some(_)) | (Some(_), None) => true,
+        (None, None) => false,
+        (Some(prev), Some(next)) => (next - prev).abs() >= 0.5,
+    };
+    memory_changed || cpu_changed
+}
+
+const METRICS_HISTORY_WINDOW_SECONDS: i64 = 600;
+const METRICS_HISTORY_HARD_CAP: usize = 400;
+
+async fn append_metric_sample(
+    state: &AppState,
+    process_id: &str,
+    memory_usage: u64,
+    cpu_usage: Option<f64>,
+) {
+    let now = Utc::now();
+    let cutoff = now - ChronoDuration::seconds(METRICS_HISTORY_WINDOW_SECONDS);
+    let sample = MetricSample {
+        timestamp: now,
+        cpu_usage,
+        memory_usage: Some(memory_usage),
+    };
+    let mut history = state.runtime.metrics_history.write().await;
+    let buffer = history.entry(process_id.to_string()).or_default();
+    buffer.push_back(sample);
+    while buffer.front().map_or(false, |s| s.timestamp < cutoff) {
+        buffer.pop_front();
+    }
+    while buffer.len() > METRICS_HISTORY_HARD_CAP {
+        buffer.pop_front();
+    }
 }
 
 async fn project_memory_usage(state: &AppState, project_id: &str) -> u64 {
@@ -3062,7 +3120,7 @@ async fn schedule_auto_restart_if_eligible(
         return;
     }
 
-    let delay_ms = policy.retry_delay_ms.unwrap_or(3000);
+    let delay_ms = policy.retry_delay_ms.unwrap_or(3000).max(500);
     append_log(
         app,
         state,
@@ -3107,7 +3165,14 @@ async fn schedule_auto_restart_if_eligible(
                 set_runtime(&app_handle, &state_handle, runtime, "process_failed").await;
             }
 
-            let _ = start_process_inner(app_handle, state_handle, process_id).await;
+            if let Err(error) =
+                start_process_inner(app_handle, state_handle, process_id.clone()).await
+            {
+                eprintln!(
+                    "auto-restart start_process_inner failed for {process_id}: {} ({})",
+                    error.message, error.code
+                );
+            }
         });
     });
 }

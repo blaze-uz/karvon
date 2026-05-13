@@ -267,6 +267,14 @@ impl ProcessRuntimeState {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct MetricSample {
+    pub timestamp: DateTime<Utc>,
+    pub cpu_usage: Option<f64>,
+    pub memory_usage: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RuntimeProcessRecord {
     pub process_id: Id,
     pub project_id: Id,

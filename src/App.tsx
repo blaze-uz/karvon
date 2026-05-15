@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
 import { AlertTriangle, Loader2, X } from "lucide-react";
 import { AppShell } from "./components/AppShell";
@@ -5,6 +6,7 @@ import { CommandPalette } from "./components/CommandPalette";
 import { ConfirmProvider } from "./components/ConfirmDialog";
 import { DashboardOverview } from "./features/dashboard/DashboardOverview";
 import { LogsView } from "./features/logs/LogsView";
+import { MachinesView } from "./features/machines/MachinesView";
 import { ProcessDetailPanel } from "./features/processes/ProcessDetailPanel";
 import { ProjectDetailView } from "./features/projects/ProjectDetailView";
 import { ProjectsView } from "./features/projects/ProjectsView";
@@ -41,14 +43,16 @@ function App() {
     return subscribeToSystemThemeChange(() => applyThemePreference("system"));
   }, [theme]);
 
-  const content = {
+  const views: Record<string, ReactNode> = {
     dashboard: <DashboardOverview />,
     projects: <ProjectsView />,
     project: <ProjectDetailView />,
     process: <ProcessDetailPanel />,
     logs: <LogsView />,
+    machines: <MachinesView />,
     settings: <SettingsView />
-  }[view];
+  };
+  const content = views[view] ?? views.dashboard;
 
   return (
     <ConfirmProvider>

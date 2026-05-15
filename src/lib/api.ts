@@ -10,6 +10,9 @@ import type {
   ID,
   LogEntry,
   LogHistoryRequest,
+  Machine,
+  MachineConnectionResult,
+  MachineFormInput,
   MetricSample,
   ProcessDefinition,
   ProcessFormInput,
@@ -50,6 +53,11 @@ export const api = {
   createWorkspace: (input: Pick<Workspace, "name" | "description">) => command<Workspace>("create_workspace", { input }),
   updateWorkspace: (workspace: Workspace) => command<Workspace>("update_workspace", { workspace }),
   deleteWorkspace: (workspaceId: ID) => command<boolean>("delete_workspace", { workspaceId }),
+  listMachines: () => command<Machine[]>("list_machines"),
+  createMachine: (input: MachineFormInput) => command<Machine>("create_machine", { input }),
+  updateMachine: (machine: Machine) => command<Machine>("update_machine", { machine }),
+  deleteMachine: (machineId: ID) => command<boolean>("delete_machine", { machineId }),
+  testMachineConnection: (machineId: ID) => command<MachineConnectionResult>("test_machine_connection", { machineId }),
   listProjects: () => command<Project[]>("list_projects"),
   createProject: (input: ProjectFormInput) => command<Project>("create_project", { input }),
   updateProject: (project: Project) => command<Project>("update_project", { project }),
@@ -88,7 +96,16 @@ export const api = {
   applyMediaGuardPreset: (basePath?: string) => command<AppConfig>("apply_media_guard_preset", { basePath }),
   importConfig: (config: AppConfig) => command<AppConfig>("import_config", { config }),
   exportConfig: (redactSecrets = true) => command<string>("export_config", { redactSecrets }),
-  getDashboardSummary: () => command<DashboardSummary>("get_dashboard_summary")
+  getDashboardSummary: () => command<DashboardSummary>("get_dashboard_summary"),
+  getRecentFrontendErrors: () =>
+    command<Array<{
+      source: string;
+      message: string;
+      stack?: string;
+      componentStack?: string;
+      timestamp: string;
+      url?: string;
+    }>>("get_recent_frontend_errors")
 };
 
 export class ApiCallError extends Error {

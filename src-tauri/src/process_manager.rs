@@ -2,10 +2,11 @@ use crate::{
     health,
     models::{
         ApiError, ApiResponse, DashboardSummary, ExternalProcess, HealthStatus, Id, LogEntry,
-        LogHistoryFilters, LogLevel, MetricSample, PortBinding, ProcessDefinition,
+        LogHistoryFilters, LogLevel, Machine, MetricSample, PortBinding, ProcessDefinition,
         ProcessRuntimeState, ProcessStatus, Project, ProjectDetail, ProjectStatus, RestartPolicy,
         RestartPolicyKind, RuntimeProcessRecord, StreamType,
     },
+    ssh_executor,
     state::AppState,
     storage,
 };
@@ -22,6 +23,7 @@ use std::{
     io::{Error, ErrorKind},
     path::{Path, PathBuf},
     process::Stdio,
+    sync::Arc,
     time::Duration,
 };
 use tauri::{AppHandle, Emitter};
@@ -29,10 +31,15 @@ use tauri_plugin_notification::NotificationExt;
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
     process::Command,
+    sync::Mutex,
     time::{sleep, Instant},
 };
 
 const LOG_HISTORY_WINDOW_MINUTES: i64 = 5;
+const LOG_BATCH_FLUSH_LIMIT: usize = 32;
+const LOG_BATCH_FLUSH_INTERVAL_MS: u64 = 50;
+const RESTART_BACKOFF_CAP_MS: u64 = 192_000;
+const RESTART_BACKOFF_MAX_EXPONENT: u32 = 6;
 const STANDARD_PROCESS_PATHS: &[&str] = &[
     "/opt/homebrew/bin",
     "/usr/local/bin",
@@ -161,7 +168,9 @@ async fn start_process_inner(
         return Ok(runtime);
     }
 
-    let cwd = resolve_working_directory(&project, &process)?;
+    let remote_machine = resolve_remote_machine(&state, &process).await;
+    let is_remote = remote_machine.is_some();
+    let cwd = resolve_working_directory_with_locality(&project, &process, is_remote)?;
     let mut runtime = state
         .runtime
         .states
@@ -191,57 +200,92 @@ async fn start_process_inner(
 
     let command_tokens = process_command_tokens(&process)?;
     let command_label = display_command(&command_tokens);
-    let mut command = direct_process_command(&command_tokens);
-    configure_process_command(&mut command, &cwd, &process.env, process.memory_limit_mb);
 
-    let mut child = match command.spawn() {
-        Ok(child) => child,
-        Err(error) if error.kind() == ErrorKind::NotFound => {
-            let mut shell_command = shell_process_command(&command_tokens);
-            configure_process_command(
-                &mut shell_command,
-                &cwd,
-                &process.env,
-                process.memory_limit_mb,
-            );
-            match shell_command.spawn() {
-                Ok(child) => {
-                    append_log(
-                        &app,
-                        &state,
-                        &process,
-                        StreamType::System,
-                        LogLevel::Debug,
-                        "Resolved command through login shell",
-                    )
-                    .await;
-                    child
-                }
-                Err(shell_error) => {
-                    let details = format!(
-                        "{command_label}: {shell_error}. Direct launch also failed: {error}"
-                    );
-                    mark_spawn_failure(&app, &state, &process, &mut runtime, details.clone()).await;
-                    schedule_auto_restart_if_eligible(&app, &state, &process).await;
-                    return Err(ApiError::with_details(
-                        "COMMAND_EXECUTION_FAILED",
-                        "Unable to execute process command",
-                        details,
-                        true,
-                    ));
-                }
+    let mut child = if let Some(machine) = remote_machine.as_ref() {
+        let mut command =
+            ssh_executor::build_ssh_command(machine, &command_tokens, Some(&cwd), &process.env);
+        match command.spawn() {
+            Ok(child) => {
+                append_log(
+                    &app,
+                    &state,
+                    &process,
+                    StreamType::System,
+                    LogLevel::Info,
+                    format!(
+                        "Connecting to {}@{}:{} via SSH",
+                        machine.ssh_user, machine.hostname, machine.ssh_port
+                    ),
+                )
+                .await;
+                child
+            }
+            Err(error) => {
+                let details = format!("{command_label} (ssh {}): {error}", machine.hostname);
+                mark_spawn_failure(&app, &state, &process, &mut runtime, details.clone()).await;
+                schedule_auto_restart_if_eligible(&app, &state, &process).await;
+                return Err(ApiError::with_details(
+                    "COMMAND_EXECUTION_FAILED",
+                    "Unable to execute remote process command",
+                    details,
+                    true,
+                ));
             }
         }
-        Err(error) => {
-            let details = format!("{command_label}: {error}");
-            mark_spawn_failure(&app, &state, &process, &mut runtime, details.clone()).await;
-            schedule_auto_restart_if_eligible(&app, &state, &process).await;
-            return Err(ApiError::with_details(
-                "COMMAND_EXECUTION_FAILED",
-                "Unable to execute process command",
-                details,
-                true,
-            ));
+    } else {
+        let mut command = direct_process_command(&command_tokens);
+        configure_process_command(&mut command, &cwd, &process.env, process.memory_limit_mb);
+
+        match command.spawn() {
+            Ok(child) => child,
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                let mut shell_command = shell_process_command(&command_tokens);
+                configure_process_command(
+                    &mut shell_command,
+                    &cwd,
+                    &process.env,
+                    process.memory_limit_mb,
+                );
+                match shell_command.spawn() {
+                    Ok(child) => {
+                        append_log(
+                            &app,
+                            &state,
+                            &process,
+                            StreamType::System,
+                            LogLevel::Debug,
+                            "Resolved command through login shell",
+                        )
+                        .await;
+                        child
+                    }
+                    Err(shell_error) => {
+                        let details = format!(
+                            "{command_label}: {shell_error}. Direct launch also failed: {error}"
+                        );
+                        mark_spawn_failure(&app, &state, &process, &mut runtime, details.clone())
+                            .await;
+                        schedule_auto_restart_if_eligible(&app, &state, &process).await;
+                        return Err(ApiError::with_details(
+                            "COMMAND_EXECUTION_FAILED",
+                            "Unable to execute process command",
+                            details,
+                            true,
+                        ));
+                    }
+                }
+            }
+            Err(error) => {
+                let details = format!("{command_label}: {error}");
+                mark_spawn_failure(&app, &state, &process, &mut runtime, details.clone()).await;
+                schedule_auto_restart_if_eligible(&app, &state, &process).await;
+                return Err(ApiError::with_details(
+                    "COMMAND_EXECUTION_FAILED",
+                    "Unable to execute process command",
+                    details,
+                    true,
+                ));
+            }
         }
     };
 
@@ -270,25 +314,29 @@ async fn start_process_inner(
         StreamType::System,
         LogLevel::Info,
         format!(
-            "Process running{}{}",
+            "Process running{}{}{}",
             pid.map(|pid| format!(" with pid {pid}"))
                 .unwrap_or_default(),
+            if is_remote { " (remote)" } else { "" },
             process
                 .memory_limit_mb
+                .filter(|_| !is_remote)
                 .map(|limit| format!(" (RAM limit {limit} MB)"))
                 .unwrap_or_default()
         ),
     )
     .await;
 
-    if let Some(pid) = pid {
-        spawn_memory_monitor(
-            app.clone(),
-            state.clone(),
-            process.project_id.clone(),
-            process.id.clone(),
-            pid,
-        );
+    if !is_remote {
+        if let Some(pid) = pid {
+            spawn_memory_monitor(
+                app.clone(),
+                state.clone(),
+                process.project_id.clone(),
+                process.id.clone(),
+                pid,
+            );
+        }
     }
 
     if let Some(stdout) = child.stdout.take() {
@@ -298,6 +346,7 @@ async fn start_process_inner(
             process.clone(),
             StreamType::Stdout,
             stdout,
+            is_remote,
         );
     }
     if let Some(stderr) = child.stderr.take() {
@@ -307,6 +356,7 @@ async fn start_process_inner(
             process.clone(),
             StreamType::Stderr,
             stderr,
+            is_remote,
         );
     }
 
@@ -314,15 +364,25 @@ async fn start_process_inner(
     let wait_state = state.clone();
     let wait_process = process.clone();
     let wait_process_group_id = pid;
+    let wait_is_remote = is_remote;
+    let wait_remote_machine = remote_machine.clone();
     tauri::async_runtime::spawn(async move {
         let status = child.wait().await;
+        if wait_is_remote {
+            cleanup_remote_process_after_exit(
+                &wait_state,
+                wait_remote_machine.as_ref(),
+                &wait_process.id,
+            )
+            .await;
+        }
         if let Some(process_group_id) = wait_process_group_id {
             let stop_timeout_ms = wait_state.config.read().await.settings.stop_timeout_ms;
             terminate_process_group_gracefully(process_group_id, stop_timeout_ms).await;
         }
-        let recovered_pid = match wait_process_group_id {
-            Some(process_group_id) => live_process_in_group(process_group_id).await,
-            None => None,
+        let recovered_pid = match (wait_is_remote, wait_process_group_id) {
+            (false, Some(process_group_id)) => live_process_in_group(process_group_id).await,
+            _ => None,
         };
         let stop_requested = match wait_process_group_id {
             Some(process_group_id) => {
@@ -531,13 +591,34 @@ async fn stop_process_inner(
     mark_stop_requested(&state, &process_id, pid).await;
     runtime.current_status = ProcessStatus::Stopping;
     set_runtime(&app, &state, runtime.clone(), "process_stopped").await;
+    let remote_machine = resolve_remote_machine(&state, &process).await;
+    let remote_pid = if remote_machine.is_some() {
+        state
+            .runtime
+            .remote_pids
+            .read()
+            .await
+            .get(&process_id)
+            .copied()
+    } else {
+        None
+    };
     append_log(
         &app,
         &state,
         &process,
         StreamType::System,
         LogLevel::Info,
-        format!("Sending SIGTERM to process group {pid}"),
+        if remote_machine.is_some() {
+            format!(
+                "Sending SIGTERM to ssh client (pid {pid}){}",
+                remote_pid
+                    .map(|rp| format!("; remote pid {rp}"))
+                    .unwrap_or_default()
+            )
+        } else {
+            format!("Sending SIGTERM to process group {pid}")
+        },
     )
     .await;
 
@@ -569,6 +650,8 @@ async fn stop_process_inner(
     let force_state = state.clone();
     let force_process = process.clone();
     let force_process_group_id = pid;
+    let force_remote_machine = remote_machine.clone();
+    let force_remote_pid = remote_pid;
     tauri::async_runtime::spawn(async move {
         let poll_interval = Duration::from_millis(100);
         let deadline = Instant::now() + Duration::from_millis(stop_timeout_ms);
@@ -592,6 +675,39 @@ async fn stop_process_inner(
             .await;
             let _ = force_kill_process_group(force_process_group_id);
             sleep(Duration::from_millis(200)).await;
+        }
+        if let (Some(machine), Some(remote_pid)) = (force_remote_machine.as_ref(), force_remote_pid)
+        {
+            match ssh_executor::kill_remote_process(machine, remote_pid, "KILL").await {
+                Ok(()) => {
+                    append_log(
+                        &force_app,
+                        &force_state,
+                        &force_process,
+                        StreamType::System,
+                        LogLevel::Debug,
+                        format!("Sent SIGKILL to remote pid {remote_pid}"),
+                    )
+                    .await;
+                }
+                Err(err) => {
+                    append_log(
+                        &force_app,
+                        &force_state,
+                        &force_process,
+                        StreamType::System,
+                        LogLevel::Warn,
+                        format!("Remote SIGKILL failed for pid {remote_pid}: {err}"),
+                    )
+                    .await;
+                }
+            }
+            force_state
+                .runtime
+                .remote_pids
+                .write()
+                .await
+                .remove(&force_process.id);
         }
         if let Some(live_pid) = live_process_in_group(force_process_group_id).await {
             if update_tracked_process_pid(
@@ -755,6 +871,17 @@ pub async fn sync_external_processes(app: AppHandle, state: AppState) {
                     .projects
                     .iter()
                     .find(|project| project.id == process.project_id)?;
+                if let Some(machine_id) = &process.machine_id {
+                    let machine = config
+                        .machines
+                        .iter()
+                        .find(|machine| &machine.id == machine_id);
+                    if let Some(machine) = machine {
+                        if !machine.is_default_local {
+                            return None;
+                        }
+                    }
+                }
                 let cwd = resolve_working_directory(project, process).ok()?;
                 let command_tokens = process_command_tokens(process).ok()?;
                 Some((project.clone(), process.clone(), cwd, command_tokens))
@@ -2053,7 +2180,14 @@ pub async fn run_process_health_check(
         .working_directory
         .as_deref()
         .or(project.as_ref().map(|project| project.root_path.as_str()));
-    let status = match health::run_health_check(&process.health_check, cwd).await {
+    let remote_machine = resolve_remote_machine(&state, &process).await;
+    let status = match health::run_health_check(
+        &process.health_check,
+        cwd,
+        remote_machine.as_ref(),
+    )
+    .await
+    {
         Ok(status) => status,
         Err(error) => {
             append_log(
@@ -2113,13 +2247,12 @@ pub async fn get_health_summary(
         .values()
         .filter(|runtime| ids.contains(&runtime.process_id))
     {
-        match runtime.health_status {
-            Some(HealthStatus::Healthy) => *summary.get_mut("healthy").unwrap() += 1,
-            Some(HealthStatus::Unhealthy | HealthStatus::Degraded) => {
-                *summary.get_mut("unhealthy").unwrap() += 1
-            }
-            _ => *summary.get_mut("unknown").unwrap() += 1,
-        }
+        let bucket = match runtime.health_status {
+            Some(HealthStatus::Healthy) => "healthy",
+            Some(HealthStatus::Unhealthy | HealthStatus::Degraded) => "unhealthy",
+            _ => "unknown",
+        };
+        *summary.entry(bucket.to_string()).or_insert(0) += 1;
     }
     ApiResponse::ok(summary)
 }
@@ -2174,19 +2307,77 @@ fn spawn_log_reader<R>(
     process: ProcessDefinition,
     stream: StreamType,
     reader: R,
+    is_remote: bool,
 ) where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
     tauri::async_runtime::spawn(async move {
         let mut lines = BufReader::new(reader).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            let level = if matches!(stream, StreamType::Stderr) {
-                LogLevel::Warn
-            } else {
-                LogLevel::Info
-            };
-            append_log(&app, &state, &process, stream.clone(), level, line).await;
+        let level = if matches!(stream, StreamType::Stderr) {
+            LogLevel::Warn
+        } else {
+            LogLevel::Info
+        };
+        loop {
+            match lines.next_line().await {
+                Ok(Some(line)) => {
+                    if is_remote && matches!(stream, StreamType::Stderr) {
+                        if let Some(remote_pid) = ssh_executor::parse_remote_pid_marker(&line) {
+                            record_remote_pid(&state, &process.id, remote_pid).await;
+                            append_log(
+                                &app,
+                                &state,
+                                &process,
+                                StreamType::System,
+                                LogLevel::Debug,
+                                format!("Remote pid {remote_pid} captured"),
+                            )
+                            .await;
+                            continue;
+                        }
+                    }
+                    let clean_line = if is_remote {
+                        line.trim_end_matches('\r').to_string()
+                    } else {
+                        line
+                    };
+                    append_log(
+                        &app,
+                        &state,
+                        &process,
+                        stream.clone(),
+                        level.clone(),
+                        clean_line,
+                    )
+                    .await;
+                }
+                Ok(None) => {
+                    append_log(
+                        &app,
+                        &state,
+                        &process,
+                        StreamType::System,
+                        LogLevel::Debug,
+                        format!("{:?} stream closed", stream),
+                    )
+                    .await;
+                    break;
+                }
+                Err(err) => {
+                    append_log(
+                        &app,
+                        &state,
+                        &process,
+                        StreamType::System,
+                        LogLevel::Warn,
+                        format!("{:?} reader error: {err}", stream),
+                    )
+                    .await;
+                    break;
+                }
+            }
         }
+        flush_process_log_batch(&app, &state, &process.id).await;
     });
 }
 
@@ -2204,7 +2395,7 @@ async fn append_log(
         process_id: process.id.clone(),
         project_id: process.project_id.clone(),
         timestamp: Utc::now(),
-        stream,
+        stream: stream.clone(),
         level,
         raw: Some(message.clone()),
         message,
@@ -2212,17 +2403,185 @@ async fn append_log(
     {
         let retention = state.config.read().await.settings.log_retention_lines;
         let mut logs = state.runtime.logs.write().await;
-        logs.push(entry.clone());
-        if logs.len() > retention {
-            let drain_count = logs.len() - retention;
-            logs.drain(0..drain_count);
+        logs.push_back(entry.clone());
+        while logs.len() > retention {
+            logs.pop_front();
         }
     }
-    {
-        let _log_history_io = state.runtime.log_history_io.lock().await;
-        let _ = storage::append_log_entry(app, &entry);
+    match stream {
+        StreamType::System => {
+            persist_log_entry(app, state, &entry).await;
+            if let Err(err) = app.emit("process_log", entry) {
+                eprintln!("[log] emit process_log failed: {err}");
+            }
+        }
+        StreamType::Stdout | StreamType::Stderr => {
+            let batcher = get_or_create_batcher(state, &process.id).await;
+            let drained = {
+                let mut buffer = batcher.lock().await;
+                buffer.push(entry);
+                if buffer.len() >= LOG_BATCH_FLUSH_LIMIT {
+                    Some(std::mem::take(&mut *buffer))
+                } else {
+                    None
+                }
+            };
+            if let Some(entries) = drained {
+                emit_log_batch(app, state, entries).await;
+            }
+        }
     }
-    let _ = app.emit("process_log", entry);
+}
+
+async fn persist_log_entry(app: &AppHandle, state: &AppState, entry: &LogEntry) {
+    let _io = state.runtime.log_history_io.lock().await;
+    if let Err(err) = storage::append_log_entry(app, entry) {
+        eprintln!(
+            "[log] append_log_entry failed: {} ({})",
+            err.message, err.code
+        );
+    }
+}
+
+async fn persist_log_entries(app: &AppHandle, state: &AppState, entries: &[LogEntry]) {
+    if entries.is_empty() {
+        return;
+    }
+    let _io = state.runtime.log_history_io.lock().await;
+    for entry in entries {
+        if let Err(err) = storage::append_log_entry(app, entry) {
+            eprintln!(
+                "[log] append_log_entry batch failed: {} ({})",
+                err.message, err.code
+            );
+            break;
+        }
+    }
+}
+
+async fn get_or_create_batcher(state: &AppState, process_id: &str) -> Arc<Mutex<Vec<LogEntry>>> {
+    {
+        let map = state.runtime.log_batchers.read().await;
+        if let Some(existing) = map.get(process_id) {
+            return existing.clone();
+        }
+    }
+    let mut map = state.runtime.log_batchers.write().await;
+    map.entry(process_id.to_string())
+        .or_insert_with(|| Arc::new(Mutex::new(Vec::new())))
+        .clone()
+}
+
+async fn emit_log_batch(app: &AppHandle, state: &AppState, entries: Vec<LogEntry>) {
+    if entries.is_empty() {
+        return;
+    }
+    persist_log_entries(app, state, &entries).await;
+    if let Err(err) = app.emit("process_log_batch", entries) {
+        eprintln!("[log] emit process_log_batch failed: {err}");
+    }
+}
+
+async fn flush_process_log_batch(app: &AppHandle, state: &AppState, process_id: &str) {
+    let batcher = {
+        let map = state.runtime.log_batchers.read().await;
+        map.get(process_id).cloned()
+    };
+    let Some(batcher) = batcher else {
+        return;
+    };
+    let drained = {
+        let mut buffer = batcher.lock().await;
+        if buffer.is_empty() {
+            return;
+        }
+        std::mem::take(&mut *buffer)
+    };
+    emit_log_batch(app, state, drained).await;
+}
+
+pub fn start_log_batch_flusher(app: AppHandle, state: AppState) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            sleep(Duration::from_millis(LOG_BATCH_FLUSH_INTERVAL_MS)).await;
+            let batchers: Vec<(Id, Arc<Mutex<Vec<LogEntry>>>)> = {
+                let map = state.runtime.log_batchers.read().await;
+                map.iter()
+                    .map(|(id, batcher)| (id.clone(), batcher.clone()))
+                    .collect()
+            };
+            for (_process_id, batcher) in batchers {
+                let drained = {
+                    let mut buffer = batcher.lock().await;
+                    if buffer.is_empty() {
+                        continue;
+                    }
+                    std::mem::take(&mut *buffer)
+                };
+                emit_log_batch(&app, &state, drained).await;
+            }
+        }
+    });
+}
+
+pub async fn record_frontend_error(
+    app: &AppHandle,
+    state: &AppState,
+    record: crate::models::FrontendErrorRecord,
+) {
+    {
+        let mut errors = state.runtime.frontend_errors.write().await;
+        if errors.len() >= crate::state::FRONTEND_ERROR_RETENTION {
+            errors.pop_front();
+        }
+        errors.push_back(record.clone());
+    }
+    let mut detail = record.message.clone();
+    if let Some(stack) = record.stack.as_ref().filter(|stack| !stack.is_empty()) {
+        detail.push_str("\n");
+        detail.push_str(stack);
+    }
+    if let Some(component_stack) = record
+        .component_stack
+        .as_ref()
+        .filter(|stack| !stack.is_empty())
+    {
+        detail.push_str("\nComponentStack:\n");
+        detail.push_str(component_stack);
+    }
+    let entry = LogEntry {
+        id: storage::id("log"),
+        process_id: "_frontend".to_string(),
+        project_id: "_app".to_string(),
+        timestamp: record.timestamp,
+        stream: StreamType::System,
+        level: LogLevel::Error,
+        raw: Some(detail.clone()),
+        message: format!("[frontend:{}] {}", record.source, record.message),
+    };
+    {
+        let retention = state.config.read().await.settings.log_retention_lines;
+        let mut logs = state.runtime.logs.write().await;
+        logs.push_back(entry.clone());
+        while logs.len() > retention {
+            logs.pop_front();
+        }
+    }
+    persist_log_entry(app, state, &entry).await;
+    if let Err(err) = app.emit("process_log", entry) {
+        eprintln!("[log] emit frontend error failed: {err}");
+    }
+}
+
+pub async fn recent_frontend_errors(state: &AppState) -> Vec<crate::models::FrontendErrorRecord> {
+    state
+        .runtime
+        .frontend_errors
+        .read()
+        .await
+        .iter()
+        .cloned()
+        .collect()
 }
 
 pub fn start_log_history_pruner(app: AppHandle, state: AppState) {
@@ -2230,7 +2589,12 @@ pub fn start_log_history_pruner(app: AppHandle, state: AppState) {
         loop {
             sleep(Duration::from_secs(60)).await;
             let _log_history_io = state.runtime.log_history_io.lock().await;
-            let _ = storage::prune_log_history(&app, log_history_since());
+            if let Err(err) = storage::prune_log_history(&app, log_history_since()) {
+                eprintln!(
+                    "[log] prune_log_history failed: {} ({})",
+                    err.message, err.code
+                );
+            }
         }
     });
 }
@@ -2263,7 +2627,9 @@ async fn set_runtime(app: &AppHandle, state: &AppState, runtime: ProcessRuntimeS
         let mut states = state.runtime.states.write().await;
         states.insert(runtime.process_id.clone(), runtime.clone());
     }
-    let _ = app.emit(event, runtime.clone());
+    if let Err(err) = app.emit(event, runtime.clone()) {
+        eprintln!("[runtime] emit {event} failed: {err}");
+    }
     maybe_notify_runtime_event(app, state, event, &runtime).await;
 }
 
@@ -2343,9 +2709,53 @@ async fn missing_dependency(state: &AppState, process: &ProcessDefinition) -> Op
     None
 }
 
+async fn resolve_remote_machine(state: &AppState, process: &ProcessDefinition) -> Option<Machine> {
+    let machine_id = process.machine_id.as_ref()?;
+    let config = state.config.read().await;
+    let machine = config
+        .machines
+        .iter()
+        .find(|machine| &machine.id == machine_id)?
+        .clone();
+    if machine.is_default_local {
+        None
+    } else {
+        Some(machine)
+    }
+}
+
+async fn record_remote_pid(state: &AppState, process_id: &str, remote_pid: u32) {
+    let mut remote_pids = state.runtime.remote_pids.write().await;
+    remote_pids.insert(process_id.to_string(), remote_pid);
+}
+
+async fn cleanup_remote_process_after_exit(
+    state: &AppState,
+    machine: Option<&Machine>,
+    process_id: &str,
+) {
+    let remote_pid = state
+        .runtime
+        .remote_pids
+        .write()
+        .await
+        .remove(process_id);
+    if let (Some(machine), Some(remote_pid)) = (machine, remote_pid) {
+        let _ = ssh_executor::kill_remote_process(machine, remote_pid, "KILL").await;
+    }
+}
+
 fn resolve_working_directory(
     project: &Project,
     process: &ProcessDefinition,
+) -> Result<String, ApiError> {
+    resolve_working_directory_with_locality(project, process, false)
+}
+
+fn resolve_working_directory_with_locality(
+    project: &Project,
+    process: &ProcessDefinition,
+    is_remote: bool,
 ) -> Result<String, ApiError> {
     let cwd = process
         .working_directory
@@ -2353,7 +2763,7 @@ fn resolve_working_directory(
         .filter(|value| !value.trim().is_empty())
         .cloned()
         .unwrap_or_else(|| project.root_path.clone());
-    if !Path::new(&cwd).exists() {
+    if !is_remote && !Path::new(&cwd).exists() {
         return Err(ApiError::with_details(
             "INVALID_PROJECT_PATH",
             "Working directory does not exist",
@@ -3084,8 +3494,15 @@ fn retry_eligible(policy: &RestartPolicy, current_count: u32) -> bool {
         RestartPolicyKind::LimitedRetries => policy
             .max_retries
             .map(|max| current_count < max)
-            .unwrap_or(true),
+            .unwrap_or(false),
     }
+}
+
+fn compute_restart_delay_ms(base_ms: u64, attempt: u32) -> u64 {
+    let base = base_ms.max(500);
+    let exponent = attempt.min(RESTART_BACKOFF_MAX_EXPONENT);
+    base.saturating_mul(1u64 << exponent)
+        .min(RESTART_BACKOFF_CAP_MS)
 }
 
 async fn schedule_auto_restart_if_eligible(
@@ -3120,7 +3537,8 @@ async fn schedule_auto_restart_if_eligible(
         return;
     }
 
-    let delay_ms = policy.retry_delay_ms.unwrap_or(3000).max(500);
+    let base_delay = policy.retry_delay_ms.unwrap_or(3000);
+    let delay_ms = compute_restart_delay_ms(base_delay, current_count);
     append_log(
         app,
         state,
@@ -3354,14 +3772,29 @@ mod tests {
     }
 
     #[test]
-    fn retry_eligible_limited_retries_with_no_max_is_infinite() {
-        assert!(retry_eligible(
+    fn retry_eligible_limited_retries_with_no_max_does_not_retry() {
+        assert!(!retry_eligible(
             &policy(RestartPolicyKind::LimitedRetries, None),
             0
         ));
-        assert!(retry_eligible(
+        assert!(!retry_eligible(
             &policy(RestartPolicyKind::LimitedRetries, None),
             10_000
         ));
+    }
+
+    #[test]
+    fn compute_restart_delay_grows_exponentially_then_caps() {
+        assert_eq!(compute_restart_delay_ms(3000, 0), 3000);
+        assert_eq!(compute_restart_delay_ms(3000, 1), 6000);
+        assert_eq!(compute_restart_delay_ms(3000, 2), 12000);
+        assert_eq!(compute_restart_delay_ms(3000, 6), RESTART_BACKOFF_CAP_MS);
+        assert_eq!(compute_restart_delay_ms(3000, 20), RESTART_BACKOFF_CAP_MS);
+    }
+
+    #[test]
+    fn compute_restart_delay_enforces_minimum_base() {
+        assert_eq!(compute_restart_delay_ms(100, 0), 500);
+        assert_eq!(compute_restart_delay_ms(0, 0), 500);
     }
 }

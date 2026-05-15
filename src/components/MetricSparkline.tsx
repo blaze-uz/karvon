@@ -74,11 +74,18 @@ function MetricSparklineImpl({
 
   const data = useMemo(() => {
     if (innerWidth <= 0) return { points: [] as { x: number; y: number; sampleIndex: number; value: number }[], yMaxValue: 0 };
+    if (!Array.isArray(samples)) return { points: [], yMaxValue: 0 };
     const filtered: { value: number; sampleIndex: number; t: number }[] = [];
     for (let i = 0; i < samples.length; i += 1) {
       const sample = samples[i];
-      const value = extract(sample);
-      if (value === undefined || Number.isNaN(value)) continue;
+      if (!sample || typeof sample.timestamp !== "string") continue;
+      let value: number | undefined;
+      try {
+        value = extract(sample);
+      } catch {
+        continue;
+      }
+      if (typeof value !== "number" || Number.isNaN(value)) continue;
       const t = Date.parse(sample.timestamp);
       if (Number.isNaN(t) || t < tMin || t > now) continue;
       filtered.push({ value, sampleIndex: i, t });
@@ -101,7 +108,18 @@ function MetricSparklineImpl({
 
   useEffect(() => {
     if (hoverIndex === null) return;
-    if (!samples[hoverIndex] || extract(samples[hoverIndex]) === undefined) {
+    const sample = samples[hoverIndex];
+    if (!sample) {
+      setHoverIndex(null);
+      return;
+    }
+    let value: number | undefined;
+    try {
+      value = extract(sample);
+    } catch {
+      value = undefined;
+    }
+    if (value === undefined) {
       setHoverIndex(null);
     }
   }, [samples, hoverIndex, extract]);
@@ -143,7 +161,7 @@ function MetricSparklineImpl({
     return Math.max(8, Math.min(width - 8, desired));
   })();
 
-  const headerValue = currentValue !== undefined ? format(currentValue) : "—";
+  const headerValue = typeof currentValue === "number" ? format(currentValue) : "—";
 
   return (
     <div className="metric-sparkline" ref={wrapperRef}>

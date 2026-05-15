@@ -8,7 +8,7 @@ import { RuntimeDot } from "../../components/RuntimeDot";
 import { formatMemory, formatMemoryLimit } from "../../lib/memory";
 import { isRuntimeBusy } from "../../lib/status";
 import { formatClock, formatRelativeTime } from "../../lib/time";
-import { useOrchestratorStore } from "../../stores/orchestratorStore";
+import { selectMachineForProcess, useOrchestratorStore } from "../../stores/orchestratorStore";
 import type { HealthCheck, MetricSample } from "../../types/domain";
 
 const extractCpu = (sample: MetricSample) => sample.cpuUsage;
@@ -36,6 +36,7 @@ export function ProcessDetailPanel() {
   const process = processes.find((item) => item.id === selectedProcessId) ?? processes[0];
   const runtime = process ? runtimeStates[process.id] : undefined;
   const project = projects.find((item) => item.id === process?.projectId);
+  const machine = useOrchestratorStore((state) => selectMachineForProcess(state, process));
   const processLogs = logs.filter((log) => log.processId === process?.id);
   const samples = process ? metricsHistory[process.id] ?? [] : [];
 
@@ -77,6 +78,11 @@ export function ProcessDetailPanel() {
           </span>
         </div>
         <StatusBadge status={runtime?.currentStatus ?? "stopped"} />
+        {machine && !machine.isDefaultLocal ? (
+          <span className="process-machine-badge" title={`${machine.sshUser}@${machine.hostname}:${machine.sshPort}`}>
+            {machine.name}
+          </span>
+        ) : null}
         <div className="icon-toolbar process-header-actions">
           <button disabled={isRuntimeBusy(runtime?.currentStatus)} type="button" onClick={() => startProcess(process.id)} title="Start process">
             <Play size={14} />
@@ -191,9 +197,9 @@ export function ProcessDetailPanel() {
             <DetailRow label="PID" value={runtime?.pid ? String(runtime.pid) : "n/a"} />
             <DetailRow label="Started" value={runtime?.startedAt ? `${formatClock(runtime.startedAt)} (${formatRelativeTime(runtime.startedAt)})` : "n/a"} />
             <DetailRow label="Stopped" value={runtime?.stoppedAt ? formatClock(runtime.stoppedAt) : "n/a"} />
-            <DetailRow label="CPU" value={runtime?.cpuUsage !== undefined ? `${runtime.cpuUsage.toFixed(1)}%` : "0%"} />
+            <DetailRow label="CPU" value={typeof runtime?.cpuUsage === "number" ? `${runtime.cpuUsage.toFixed(1)}%` : "0%"} />
             <DetailRow label="Memory" value={runtime?.memoryUsage ? formatMemory(runtime.memoryUsage) : "0 MB"} />
-            <DetailRow label="Exit code" value={runtime?.exitCode !== undefined ? String(runtime.exitCode) : "n/a"} />
+            <DetailRow label="Exit code" value={typeof runtime?.exitCode === "number" ? String(runtime.exitCode) : "n/a"} />
             <DetailRow label="Last error" value={runtime?.lastError ?? "None"} />
             <DetailRow
               label="Last heartbeat"
@@ -202,11 +208,11 @@ export function ProcessDetailPanel() {
             <DetailRow
               label="Ports"
               value={
-                runtime?.portBindings.length
-                  ? runtime.portBindings.map((p) => `${p.host}:${p.port} (${p.protocol})`).join(", ")
+                Array.isArray(runtime?.portBindings) && runtime!.portBindings.length
+                  ? runtime!.portBindings.map((p) => `${p.host}:${p.port} (${p.protocol})`).join(", ")
                   : "None"
               }
-              mono={!!runtime?.portBindings.length}
+              mono={Array.isArray(runtime?.portBindings) && runtime!.portBindings.length > 0}
             />
           </div>
 

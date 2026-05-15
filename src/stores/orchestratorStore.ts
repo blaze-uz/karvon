@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { api, ApiCallError, unwrap } from "../lib/api";
+import { reportError } from "../lib/errorReporting";
 import { deriveProjectStatus } from "../lib/status";
 import type {
   ActivityEvent,
@@ -10,6 +11,9 @@ import type {
   ID,
   LogEntry,
   LogFilters,
+  Machine,
+  MachineConnectionResult,
+  MachineFormInput,
   MetricSample,
   ProcessDefinition,
   ProcessFormInput,
@@ -44,6 +48,8 @@ interface OrchestratorState {
   booted: boolean;
   view: ViewKey;
   workspaces: Workspace[];
+  machines: Machine[];
+  machineConnectionResults: Record<ID, MachineConnectionResult>;
   projects: Project[];
   processes: ProcessDefinition[];
   runtimeStates: Record<ID, ProcessRuntimeState>;
@@ -61,6 +67,10 @@ interface OrchestratorState {
   currentAction?: ActionState;
   lastError?: OrchestratorError;
   dismissError: () => void;
+  createMachine: (input: MachineFormInput) => Promise<boolean>;
+  updateMachine: (machine: Machine) => Promise<void>;
+  deleteMachine: (machineId: ID) => Promise<void>;
+  testMachineConnection: (machineId: ID) => Promise<MachineConnectionResult | undefined>;
   initialize: () => Promise<void>;
   refreshAll: () => Promise<void>;
   refreshDashboard: () => Promise<void>;
@@ -130,7 +140,7 @@ function appendMetricsSample(
   history: Record<ID, MetricSample[]>,
   runtime: ProcessRuntimeState
 ): Record<ID, MetricSample[]> {
-  if (runtime.cpuUsage === undefined && runtime.memoryUsage === undefined) return history;
+  if (typeof runtime.cpuUsage !== "number" && typeof runtime.memoryUsage !== "number") return history;
   const cutoffMs = Date.now() - METRICS_HISTORY_WINDOW_MS;
   const prev = history[runtime.processId] ?? [];
   const sample: MetricSample = {
@@ -172,10 +182,36 @@ async function safeAction<T>(set: (partial: Partial<OrchestratorState>) => void,
   }
 }
 
+function safeListener<T>(eventName: string, handler: (payload: T) => void) {
+  return (payload: T) => {
+    try {
+      handler(payload);
+    } catch (error) {
+      reportError(`listener:${eventName}`, error);
+    }
+  };
+}
+
+function appendLogs(state: OrchestratorState, incoming: LogEntry[]): LogEntry[] {
+  if (incoming.length === 0) return state.logs;
+  const retention = state.settings?.logRetentionLines ?? 5000;
+  const seen = new Set(state.logs.map((entry) => entry.id));
+  const merged = state.logs.slice();
+  for (const entry of incoming) {
+    if (seen.has(entry.id)) continue;
+    seen.add(entry.id);
+    merged.push(entry);
+  }
+  if (merged.length > retention) merged.splice(0, merged.length - retention);
+  return merged;
+}
+
 export const useOrchestratorStore = create<OrchestratorState>((set, get) => ({
   booted: false,
   view: "dashboard",
   workspaces: [],
+  machines: [],
+  machineConnectionResults: {},
   projects: [],
   processes: [],
   runtimeStates: {},
@@ -187,38 +223,55 @@ export const useOrchestratorStore = create<OrchestratorState>((set, get) => ({
   logFilters: defaultLogFilters,
   initialize: async () => {
     if (get().booted) return;
-    api.on<LogEntry>("process_log", (log) => {
-      if (get().logFilters.paused) return;
-      set((state) => ({
-        logs: state.logs.some((entry) => entry.id === log.id)
-          ? state.logs
-          : [...state.logs.slice(-(state.settings?.logRetentionLines ?? 5000) + 1), log]
-      }));
-    });
+    api.on<LogEntry>(
+      "process_log",
+      safeListener<LogEntry>("process_log", (log) => {
+        if (!log?.id) return;
+        if (get().logFilters.paused) return;
+        set((state) => ({ logs: appendLogs(state, [log]) }));
+      })
+    );
+    api.on<LogEntry[]>(
+      "process_log_batch",
+      safeListener<LogEntry[]>("process_log_batch", (batch) => {
+        if (!Array.isArray(batch) || batch.length === 0) return;
+        if (get().logFilters.paused) return;
+        const filtered = batch.filter((entry): entry is LogEntry => Boolean(entry && entry.id));
+        if (filtered.length === 0) return;
+        set((state) => ({ logs: appendLogs(state, filtered) }));
+      })
+    );
     const updateRuntime = (runtime: ProcessRuntimeState) => {
       if (!runtime?.processId) return;
       set((state) => ({ runtimeStates: { ...state.runtimeStates, [runtime.processId]: runtime } }));
       scheduleDashboardRefresh(get().refreshDashboard);
     };
-    api.on<ProcessRuntimeState>("process_started", updateRuntime);
-    api.on<ProcessRuntimeState>("process_stopped", updateRuntime);
-    api.on<ProcessRuntimeState>("process_failed", updateRuntime);
-    api.on<ProcessRuntimeState>("process_health_changed", updateRuntime);
-    api.on<ProcessRuntimeState>("process_metrics_changed", (runtime) => {
-      if (!runtime?.processId) return;
-      set((state) => ({
-        runtimeStates: { ...state.runtimeStates, [runtime.processId]: runtime },
-        metricsHistory: appendMetricsSample(state.metricsHistory, runtime)
-      }));
-    });
+    api.on<ProcessRuntimeState>("process_started", safeListener("process_started", updateRuntime));
+    api.on<ProcessRuntimeState>("process_stopped", safeListener("process_stopped", updateRuntime));
+    api.on<ProcessRuntimeState>("process_failed", safeListener("process_failed", updateRuntime));
+    api.on<ProcessRuntimeState>(
+      "process_health_changed",
+      safeListener("process_health_changed", updateRuntime)
+    );
+    api.on<ProcessRuntimeState>(
+      "process_metrics_changed",
+      safeListener<ProcessRuntimeState>("process_metrics_changed", (runtime) => {
+        if (!runtime?.processId) return;
+        set((state) => ({
+          runtimeStates: { ...state.runtimeStates, [runtime.processId]: runtime },
+          metricsHistory: appendMetricsSample(state.metricsHistory, runtime)
+        }));
+      })
+    );
     await get().refreshAll();
     set({ booted: true });
   },
   refreshAll: async () => {
     await safeAction(set, { key: "refresh", label: "Refreshing workspace" }, async () => {
-      const [config, workspaces, projects, runtimes, logs, dashboard] = await Promise.all([
+      const [config, workspaces, machines, projects, runtimes, logs, dashboard] = await Promise.all([
         api.getConfig().then(unwrap),
         api.listWorkspaces().then(unwrap),
+        api.listMachines().then(unwrap),
         api.listProjects().then(unwrap),
         api.getAllRuntimeStates().then(unwrap),
         api.getLogHistory({ limit: 1000, since: recentLogHistorySince() }).then(unwrap),
@@ -227,6 +280,7 @@ export const useOrchestratorStore = create<OrchestratorState>((set, get) => ({
       const selectedProjectId = config.lastSelectedProjectId ?? projects[0]?.id;
       set({
         workspaces,
+        machines,
         projects,
         processes: config.processes,
         runtimeStates: mergeRuntime(runtimes),
@@ -394,6 +448,41 @@ export const useOrchestratorStore = create<OrchestratorState>((set, get) => ({
     }
   },
   dismissError: () => set({ lastError: undefined }),
+  createMachine: async (input) => {
+    const created = await safeAction(set, { key: "create-machine", label: "Adding machine" }, async () => {
+      const machine = await api.createMachine(input).then(unwrap);
+      set((state) => ({ machines: [...state.machines, machine] }));
+      return true;
+    });
+    return Boolean(created);
+  },
+  updateMachine: async (machine) => {
+    await safeAction(set, { key: `update-machine:${machine.id}`, label: "Saving machine" }, async () => {
+      const saved = await api.updateMachine(machine).then(unwrap);
+      set((state) => ({ machines: state.machines.map((item) => (item.id === saved.id ? saved : item)) }));
+    });
+  },
+  deleteMachine: async (machineId) => {
+    await safeAction(set, { key: `delete-machine:${machineId}`, label: "Removing machine" }, async () => {
+      await api.deleteMachine(machineId).then(unwrap);
+      set((state) => {
+        const { [machineId]: _removed, ...rest } = state.machineConnectionResults;
+        return {
+          machines: state.machines.filter((machine) => machine.id !== machineId),
+          machineConnectionResults: rest
+        };
+      });
+    });
+  },
+  testMachineConnection: async (machineId) => {
+    return safeAction(set, { key: `test-machine:${machineId}`, label: "Testing connection" }, async () => {
+      const result = await api.testMachineConnection(machineId).then(unwrap);
+      set((state) => ({
+        machineConnectionResults: { ...state.machineConnectionResults, [machineId]: result }
+      }));
+      return result;
+    });
+  },
   stopExternalProcess: async (projectId, processGroupId) => {
     await safeAction(set, { key: `stop-external:${processGroupId}`, label: "Stopping process" }, async () => {
       await api.stopExternalProcess(processGroupId).then(unwrap);
@@ -445,6 +534,15 @@ export function selectCurrentProject(state: OrchestratorState): Project | undefi
 
 export function selectCurrentProcess(state: OrchestratorState): ProcessDefinition | undefined {
   return state.processes.find((process) => process.id === state.selectedProcessId);
+}
+
+export function selectMachineForProcess(state: OrchestratorState, process: ProcessDefinition | undefined): Machine | undefined {
+  if (!process) return undefined;
+  if (process.machineId) {
+    const explicit = state.machines.find((machine) => machine.id === process.machineId);
+    if (explicit) return explicit;
+  }
+  return state.machines.find((machine) => machine.isDefaultLocal);
 }
 
 export function selectProjectStatus(state: OrchestratorState, projectId: ID) {

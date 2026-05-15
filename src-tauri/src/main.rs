@@ -3,6 +3,7 @@ mod health;
 mod mediaguard_preset;
 mod models;
 mod process_manager;
+mod ssh_executor;
 mod state;
 mod storage;
 
@@ -27,8 +28,27 @@ fn run_startup_step<F: FnOnce()>(name: &str, step: F) {
     }
 }
 
+fn install_panic_hook() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let location = info
+            .location()
+            .map(|loc| format!("{}:{}:{}", loc.file(), loc.line(), loc.column()))
+            .unwrap_or_else(|| "<unknown>".to_string());
+        let payload = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|msg| (*msg).to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "<non-string panic payload>".to_string());
+        eprintln!("[panic] at {location}: {payload}");
+        previous(info);
+    }));
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    install_panic_hook();
     let shutdown_started = Arc::new(AtomicBool::new(false));
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -50,6 +70,7 @@ pub fn run() {
             state::set_global_state(state.clone());
             app.manage(state);
             process_manager::start_log_history_pruner(app.handle().clone(), state::app_state());
+            process_manager::start_log_batch_flusher(app.handle().clone(), state::app_state());
             run_startup_step("recover_tracked_processes", || {
                 tauri::async_runtime::block_on(process_manager::recover_tracked_processes(
                     app.handle().clone(),
@@ -76,6 +97,11 @@ pub fn run() {
             commands::create_workspace,
             commands::update_workspace,
             commands::delete_workspace,
+            commands::list_machines,
+            commands::create_machine,
+            commands::update_machine,
+            commands::delete_machine,
+            commands::test_machine_connection,
             commands::list_projects,
             commands::create_project,
             commands::update_project,
@@ -115,7 +141,9 @@ pub fn run() {
             commands::update_settings,
             commands::apply_media_guard_preset,
             commands::import_config,
-            commands::export_config
+            commands::export_config,
+            commands::log_frontend_error,
+            commands::get_recent_frontend_errors
         ])
         .build(tauri::generate_context!())
         .expect("error while building App Orchestrator");

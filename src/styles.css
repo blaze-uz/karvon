@@ -4125,11 +4125,243 @@ select:focus-visible {
 }
 
 /* ============================================================
+   Error boundary fallback
+   ============================================================ */
+.error-boundary {
+  height: 100%;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.error-boundary-panel {
+  max-width: 560px;
+  width: 100%;
+  background: var(--surface-1);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 24px;
+  box-shadow: var(--soft-shadow);
+  display: grid;
+  gap: 14px;
+}
+
+.error-boundary-icon {
+  color: var(--bad);
+}
+
+.error-boundary-panel h1 {
+  font-size: 18px;
+  margin: 0;
+  color: var(--text);
+}
+
+.error-boundary-message {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  word-break: break-word;
+}
+
+.error-boundary-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.error-boundary-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  background: var(--accent);
+  color: var(--accent-contrast, #fff);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.error-boundary-actions button.ghost {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--line);
+}
+
+.error-boundary-details {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 12px;
+}
+
+.error-boundary-details summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.error-boundary-details pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 240px;
+  overflow: auto;
+  margin: 8px 0 0;
+  color: var(--text-soft);
+}
+
+/* ============================================================
+   Machines view
+   ============================================================ */
+.page.machines-view {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 28px 32px;
+  overflow-y: auto;
+}
+
+.page-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  flex-wrap: wrap;
+}
+
+.page-header h2 {
+  margin: 4px 0 6px;
+  font-size: 20px;
+}
+
+.page-header .eyebrow {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 11px;
+  color: var(--muted);
+  margin: 0;
+}
+
+.page-header .muted {
+  color: var(--muted);
+  margin: 0;
+  max-width: 540px;
+}
+
+.machine-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 14px;
+}
+
+.machine-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.machine-card header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.machine-card header > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+}
+
+.machine-card .badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 99px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  background: var(--surface-muted);
+  color: var(--muted);
+}
+
+.machine-card dl {
+  display: grid;
+  grid-template-columns: 80px 1fr;
+  gap: 4px 8px;
+  margin: 0;
+  font-size: 12px;
+}
+
+.machine-card dt {
+  color: var(--muted);
+}
+
+.machine-card dd {
+  margin: 0;
+  word-break: break-all;
+}
+
+.machine-card .ok-text {
+  color: var(--good);
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.machine-card .danger-text {
+  color: var(--bad);
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.machine-card-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: auto;
+}
+
+.machine-card-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.machine-card-actions button.danger {
+  color: var(--bad);
+}
+
+.form-grid label.span-2 {
+  grid-column: span 2;
+}
+
+.process-machine-badge {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 8px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--surface-muted);
+  color: var(--accent);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* ============================================================
    Narrow window adjustments
    ============================================================ */
 @media (max-width: 720px) {
   .form-grid,
   form.form-grid {
     grid-template-columns: 1fr !important;
+  }
+  .form-grid label.span-2 {
+    grid-column: span 1;
   }
 }

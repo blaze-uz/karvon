@@ -8,6 +8,7 @@ import {
   RotateCcw,
   ScrollText,
   Search,
+  ServerCog,
   Settings,
   Square
 } from "lucide-react";
@@ -22,6 +23,7 @@ import type { ProcessDefinition, ProcessRuntimeState, Project, ViewKey } from ".
 const viewRows: Array<{ key: ViewKey; label: string; icon: LucideIcon }> = [
   { key: "dashboard", label: "Status", icon: LayoutDashboard },
   { key: "projects", label: "Projects", icon: FolderKanban },
+  { key: "machines", label: "Machines", icon: ServerCog },
   { key: "logs", label: "Logs", icon: ScrollText }
 ];
 

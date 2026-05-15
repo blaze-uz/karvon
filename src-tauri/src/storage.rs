@@ -1,6 +1,6 @@
 use crate::models::{
-    ActivityEvent, ActivityType, ApiError, AppConfig, Id, LogEntry, RuntimeProcessRecord,
-    CURRENT_CONFIG_SCHEMA_VERSION,
+    ActivityEvent, ActivityType, ApiError, AppConfig, Id, LogEntry, Machine, RuntimeProcessRecord,
+    CURRENT_CONFIG_SCHEMA_VERSION, DEFAULT_LOCAL_MACHINE_ID,
 };
 use chrono::{DateTime, Utc};
 use std::{
@@ -63,6 +63,8 @@ pub fn load_config(app: &AppHandle) -> AppConfig {
         if backup_config_before_migration(&path, &content).is_ok() {
             let _ = save_config_to_path(&path, &config);
         }
+    } else {
+        ensure_default_local_machine(&mut config);
     }
 
     config
@@ -355,7 +357,35 @@ fn normalize_runtime_records(
 
 pub fn migrate_config(mut config: AppConfig) -> AppConfig {
     config.schema_version = CURRENT_CONFIG_SCHEMA_VERSION;
+    ensure_default_local_machine(&mut config);
     config
+}
+
+pub fn ensure_default_local_machine(config: &mut AppConfig) {
+    let now = Utc::now();
+    let has_default = config.machines.iter().any(|machine| machine.is_default_local);
+    if !has_default {
+        if let Some(existing) = config
+            .machines
+            .iter_mut()
+            .find(|machine| machine.id == DEFAULT_LOCAL_MACHINE_ID)
+        {
+            existing.is_default_local = true;
+            existing.updated_at = now;
+        } else {
+            config.machines.insert(0, Machine::default_local(now));
+        }
+    }
+    let mut default_seen = false;
+    for machine in &mut config.machines {
+        if machine.is_default_local {
+            if default_seen {
+                machine.is_default_local = false;
+            } else {
+                default_seen = true;
+            }
+        }
+    }
 }
 
 fn backup_config_before_migration(path: &Path, content: &str) -> Result<(), ApiError> {

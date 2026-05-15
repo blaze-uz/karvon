@@ -1,4 +1,7 @@
-use crate::models::{AppConfig, Id, LogEntry, MetricSample, ProcessRuntimeState, RuntimeProcessRecord};
+use crate::models::{
+    AppConfig, FrontendErrorRecord, Id, LogEntry, MetricSample, ProcessRuntimeState,
+    RuntimeProcessRecord,
+};
 use std::sync::OnceLock;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -6,15 +9,20 @@ use std::{
 };
 use tokio::sync::{Mutex, RwLock};
 
+pub const FRONTEND_ERROR_RETENTION: usize = 100;
+
 #[derive(Clone)]
 pub struct RuntimeRegistry {
     pub states: Arc<RwLock<HashMap<Id, ProcessRuntimeState>>>,
-    pub logs: Arc<RwLock<Vec<LogEntry>>>,
+    pub logs: Arc<RwLock<VecDeque<LogEntry>>>,
     pub pids: Arc<RwLock<HashMap<Id, u32>>>,
     pub process_records: Arc<RwLock<HashMap<Id, RuntimeProcessRecord>>>,
     pub stopping_processes: Arc<RwLock<HashSet<Id>>>,
     pub log_history_io: Arc<Mutex<()>>,
     pub metrics_history: Arc<RwLock<HashMap<Id, VecDeque<MetricSample>>>>,
+    pub frontend_errors: Arc<RwLock<VecDeque<FrontendErrorRecord>>>,
+    pub log_batchers: Arc<RwLock<HashMap<Id, Arc<Mutex<Vec<LogEntry>>>>>>,
+    pub remote_pids: Arc<RwLock<HashMap<Id, u32>>>,
 }
 
 impl RuntimeRegistry {
@@ -39,12 +47,17 @@ impl RuntimeRegistry {
             .collect();
         Self {
             states: Arc::new(RwLock::new(states)),
-            logs: Arc::new(RwLock::new(logs)),
+            logs: Arc::new(RwLock::new(VecDeque::from(logs))),
             pids: Arc::new(RwLock::new(pids)),
             process_records: Arc::new(RwLock::new(process_records)),
             stopping_processes: Arc::new(RwLock::new(HashSet::new())),
             log_history_io: Arc::new(Mutex::new(())),
             metrics_history: Arc::new(RwLock::new(HashMap::new())),
+            frontend_errors: Arc::new(RwLock::new(VecDeque::with_capacity(
+                FRONTEND_ERROR_RETENTION,
+            ))),
+            log_batchers: Arc::new(RwLock::new(HashMap::new())),
+            remote_pids: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 }

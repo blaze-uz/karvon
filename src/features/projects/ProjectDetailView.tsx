@@ -62,6 +62,7 @@ export function ProjectDetailView() {
   const loadExternalProcesses = useOrchestratorStore((state) => state.loadExternalProcesses);
   const stopExternalProcess = useOrchestratorStore((state) => state.stopExternalProcess);
   const logs = useOrchestratorStore((state) => state.logs);
+  const machines = useOrchestratorStore((state) => state.machines);
   const confirm = useConfirm();
   const [formOpen, setFormOpen] = useState(false);
   const [draft, setDraft] = useState<ProcessFormInput | null>(null);
@@ -461,6 +462,20 @@ export function ProjectDetailView() {
                       placeholder="Off"
                     />
                   </label>
+                  <label>
+                    Machine
+                    <select
+                      value={draft.machineId ?? ""}
+                      onChange={(event) => setDraft({ ...draft, machineId: event.target.value || undefined })}
+                    >
+                      <option value="">{machines.find((machine) => machine.isDefaultLocal)?.name ?? "This Mac"} (local)</option>
+                      {machines.filter((machine) => !machine.isDefaultLocal).map((machine) => (
+                        <option key={machine.id} value={machine.id}>
+                          {machine.name} ({machine.sshUser}@{machine.hostname})
+                        </option>
+                      ))}
+                    </select>
+                  </label>
                   <label className="checkbox-line">
                     <input type="checkbox" checked={draft.autoStart} onChange={(event) => setDraft({ ...draft, autoStart: event.target.checked })} />
                     Include in project start
@@ -476,27 +491,32 @@ export function ProjectDetailView() {
             ) : null}
 
             <div className="solo-detail-card">
-              {projectProcesses.map((process) => (
-                <CommandRow
-                  key={process.id}
-                  process={process}
-                  runtime={runtimeStates[process.id]}
-                  onSelect={() => selectProcess(process.id)}
-                  onStart={() => startProcess(process.id)}
-                  onStop={() => stopProcess(process.id)}
-                  onRestart={() => restartProcess(process.id)}
-                  onMemoryLimitCommit={(memoryLimitMb) => updateProcess({ ...process, memoryLimitMb })}
-                  onDelete={async () => {
-                    const ok = await confirm({
-                      title: `Delete ${process.name}?`,
-                      message: "The process definition will be removed. A running instance will be stopped.",
-                      confirmLabel: "Delete",
-                      danger: true,
-                    });
-                    if (ok) void deleteProcess(process.id);
-                  }}
-                />
-              ))}
+              {projectProcesses.map((process) => {
+                const machine = process.machineId ? machines.find((item) => item.id === process.machineId) : undefined;
+                const machineLabel = machine && !machine.isDefaultLocal ? machine.name : undefined;
+                return (
+                  <CommandRow
+                    key={process.id}
+                    process={process}
+                    runtime={runtimeStates[process.id]}
+                    machineLabel={machineLabel}
+                    onSelect={() => selectProcess(process.id)}
+                    onStart={() => startProcess(process.id)}
+                    onStop={() => stopProcess(process.id)}
+                    onRestart={() => restartProcess(process.id)}
+                    onMemoryLimitCommit={(memoryLimitMb) => updateProcess({ ...process, memoryLimitMb })}
+                    onDelete={async () => {
+                      const ok = await confirm({
+                        title: `Delete ${process.name}?`,
+                        message: "The process definition will be removed. A running instance will be stopped.",
+                        confirmLabel: "Delete",
+                        danger: true,
+                      });
+                      if (ok) void deleteProcess(process.id);
+                    }}
+                  />
+                );
+              })}
               {!projectProcesses.length ? <p className="solo-empty-row">No commands configured.</p> : null}
             </div>
           </SoloSection>
@@ -622,6 +642,7 @@ function SoloDetailRow({
 function CommandRow({
   process,
   runtime,
+  machineLabel,
   onSelect,
   onStart,
   onStop,
@@ -631,6 +652,7 @@ function CommandRow({
 }: {
   process: ProcessDefinition;
   runtime?: ProcessRuntimeState;
+  machineLabel?: string;
   onSelect: () => void;
   onStart: () => void;
   onStop: () => void;
@@ -644,7 +666,10 @@ function CommandRow({
         <RuntimeDot status={runtime?.currentStatus} />
         <span>
           <strong>{process.name}</strong>
-          <small>{formatProcessCommand(process)}</small>
+          <small>
+            {formatProcessCommand(process)}
+            {machineLabel ? <span className="process-machine-badge">{machineLabel}</span> : null}
+          </small>
         </span>
       </button>
       <StatusBadge status={runtime?.currentStatus ?? "stopped"} />
@@ -878,8 +903,13 @@ function ExternalProcessDetailsModal({
     }
   };
 
-  const hasPorts = (external.ports?.length ?? 0) > 0;
-  const hasChildren = (external.children?.length ?? 0) > 0;
+  const hasPorts = Array.isArray(external.ports) && external.ports.length > 0;
+  const hasChildren = Array.isArray(external.children) && external.children.length > 0;
+  const childList = hasChildren ? external.children! : [];
+  const portList = hasPorts ? external.ports! : [];
+  const commandTitle =
+    (typeof external.command === "string" && external.command.trim().split(/\s+/)[0]) ||
+    `pid ${external.pid}`;
   const memoryMb =
     external.memoryKb && external.memoryKb > 0
       ? `${(external.memoryKb / 1024).toFixed(1)} MB`
@@ -901,9 +931,7 @@ function ExternalProcessDetailsModal({
         <div className="external-process-modal-header">
           <RuntimeDot status="running" />
           <div className="external-process-modal-heading">
-            <h2 id="external-process-modal-title">
-              {external.command.split(/\s+/)[0] || `pid ${external.pid}`}
-            </h2>
+            <h2 id="external-process-modal-title">{commandTitle}</h2>
             <span className="external-process-modal-subtitle">pid {external.pid} · pgid {external.processGroupId}</span>
           </div>
           <button
@@ -939,7 +967,7 @@ function ExternalProcessDetailsModal({
             <h3>Network</h3>
             {hasPorts ? (
               <ul className="external-process-port-list">
-                {external.ports!.map((port) => (
+                {portList.map((port) => (
                   <li key={port} className="external-process-port-chip">{port}</li>
                 ))}
               </ul>
@@ -960,7 +988,7 @@ function ExternalProcessDetailsModal({
 
           {hasChildren && (
             <section className="external-process-modal-section">
-              <h3>Process group ({external.children!.length + 1} processes)</h3>
+              <h3>Process group ({childList.length + 1} processes)</h3>
               <table className="external-process-children-table">
                 <thead>
                   <tr>
@@ -969,7 +997,7 @@ function ExternalProcessDetailsModal({
                   </tr>
                 </thead>
                 <tbody>
-                  {external.children!.map((child) => (
+                  {childList.map((child) => (
                     <tr key={child.pid}>
                       <td>{child.pid}</td>
                       <td>{child.command || "—"}</td>

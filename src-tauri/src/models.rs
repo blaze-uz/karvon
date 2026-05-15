@@ -3,7 +3,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 pub type Id = String;
-pub const CURRENT_CONFIG_SCHEMA_VERSION: u32 = 1;
+pub const CURRENT_CONFIG_SCHEMA_VERSION: u32 = 2;
+pub const DEFAULT_LOCAL_MACHINE_ID: &str = "machine_local";
+
+pub fn default_ssh_port() -> u16 {
+    22
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -83,6 +88,43 @@ pub struct Workspace {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub is_default: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Machine {
+    pub id: Id,
+    pub name: String,
+    pub hostname: String,
+    pub ssh_user: String,
+    #[serde(default = "default_ssh_port")]
+    pub ssh_port: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh_key_path: Option<String>,
+    #[serde(default)]
+    pub is_default_local: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MachineFormInput {
+    pub name: String,
+    pub hostname: String,
+    pub ssh_user: String,
+    #[serde(default = "default_ssh_port")]
+    pub ssh_port: u16,
+    #[serde(default)]
+    pub ssh_key_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MachineConnectionResult {
+    pub ok: bool,
+    pub latency_ms: u32,
+    pub detail: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -179,6 +221,8 @@ pub struct ProcessDefinition {
     pub log_mode: LogMode,
     pub group: Option<String>,
     pub visible: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine_id: Option<Id>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -403,12 +447,28 @@ pub struct ActivityEvent {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct FrontendErrorRecord {
+    pub source: String,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stack: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub component_stack: Option<String>,
+    pub timestamp: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AppConfig {
     #[serde(default = "default_config_schema_version")]
     pub schema_version: u32,
     pub workspaces: Vec<Workspace>,
     pub projects: Vec<Project>,
     pub processes: Vec<ProcessDefinition>,
+    #[serde(default)]
+    pub machines: Vec<Machine>,
     pub settings: AppSettings,
     pub last_selected_project_id: Option<Id>,
     pub last_selected_process_id: Option<Id>,
@@ -436,10 +496,28 @@ impl Default for AppConfig {
             workspaces: vec![workspace],
             projects: vec![],
             processes: vec![],
+            machines: vec![Machine::default_local(now)],
             settings: AppSettings::default(),
             last_selected_project_id: None,
             last_selected_process_id: None,
             activity: vec![],
+        }
+    }
+}
+
+impl Machine {
+    pub fn default_local(now: DateTime<Utc>) -> Self {
+        let ssh_user = std::env::var("USER").unwrap_or_else(|_| "root".to_string());
+        Self {
+            id: DEFAULT_LOCAL_MACHINE_ID.to_string(),
+            name: "This Mac".to_string(),
+            hostname: "127.0.0.1".to_string(),
+            ssh_user,
+            ssh_port: 22,
+            ssh_key_path: None,
+            is_default_local: true,
+            created_at: now,
+            updated_at: now,
         }
     }
 }
@@ -497,6 +575,8 @@ pub struct ProcessFormInput {
     pub log_mode: LogMode,
     pub group: Option<String>,
     pub visible: bool,
+    #[serde(default)]
+    pub machine_id: Option<Id>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

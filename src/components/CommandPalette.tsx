@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { LucideIcon } from "lucide-react";
-import { Activity, Columns3, FolderKanban, LayoutDashboard, Play, RotateCcw, Search, Settings, Square, TerminalSquare } from "lucide-react";
+import { Activity, Columns3, FolderKanban, LayoutDashboard, Play, RotateCcw, Search, ServerCog, Settings, Square, TerminalSquare } from "lucide-react";
 import { formatPath } from "../lib/time";
 import { useOrchestratorStore } from "../stores/orchestratorStore";
 import { useConfirm } from "./ConfirmDialog";
@@ -86,6 +86,14 @@ export function CommandPalette() {
         section: "Navigation",
         icon: TerminalSquare,
         run: () => selectView("logs")
+      },
+      {
+        id: "nav-machines",
+        label: "Open machines",
+        description: "Configure local Mac and remote SSH hosts",
+        section: "Navigation",
+        icon: ServerCog,
+        run: () => selectView("machines")
       },
       {
         id: "nav-settings",

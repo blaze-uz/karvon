@@ -569,6 +569,7 @@ fn process(
         log_mode: LogMode::Combined,
         group: Some(group.to_string()),
         visible: true,
+        machine_id: None,
         created_at,
         updated_at: now,
     }

@@ -28,6 +28,32 @@ export interface Workspace {
   isDefault: boolean;
 }
 
+export interface Machine {
+  id: ID;
+  name: string;
+  hostname: string;
+  sshUser: string;
+  sshPort: number;
+  sshKeyPath?: string;
+  isDefaultLocal: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MachineFormInput {
+  name: string;
+  hostname: string;
+  sshUser: string;
+  sshPort: number;
+  sshKeyPath?: string;
+}
+
+export interface MachineConnectionResult {
+  ok: boolean;
+  latencyMs: number;
+  detail: string;
+}
+
 export interface Project {
   id: ID;
   workspaceId: ID;
@@ -98,6 +124,7 @@ export interface ProcessDefinition {
   logMode: LogMode;
   group?: string;
   visible: boolean;
+  machineId?: ID;
   createdAt: string;
   updatedAt: string;
 }
@@ -216,6 +243,7 @@ export interface AppConfig {
   workspaces: Workspace[];
   projects: Project[];
   processes: ProcessDefinition[];
+  machines: Machine[];
   settings: AppSettings;
   lastSelectedProjectId?: ID;
   lastSelectedProcessId?: ID;
@@ -235,7 +263,14 @@ export interface ApiResponse<T> {
   error?: ApiError;
 }
 
-export type ViewKey = "dashboard" | "projects" | "project" | "process" | "logs" | "settings";
+export type ViewKey =
+  | "dashboard"
+  | "projects"
+  | "project"
+  | "process"
+  | "logs"
+  | "machines"
+  | "settings";
 
 export interface LogFilters {
   projectId?: ID;
@@ -289,6 +324,7 @@ export interface ProcessFormInput {
   logMode: LogMode;
   group?: string;
   visible: boolean;
+  machineId?: ID;
 }
 
 export interface ValidationResult {

@@ -6,6 +6,9 @@ import type {
   DashboardSummary,
   ID,
   LogEntry,
+  Machine,
+  MachineConnectionResult,
+  MachineFormInput,
   MetricSample,
   ProcessDefinition,
   ProcessFormInput,
@@ -30,6 +33,28 @@ const defaultWorkspace: Workspace = {
   createdAt: now(),
   updatedAt: now(),
   isDefault: true
+};
+
+const defaultLocalMachine: Machine = {
+  id: "machine_local",
+  name: "This Mac",
+  hostname: "127.0.0.1",
+  sshUser: "demo",
+  sshPort: 22,
+  isDefaultLocal: true,
+  createdAt: now(),
+  updatedAt: now()
+};
+
+const demoMarsMachine: Machine = {
+  id: "machine_mars",
+  name: "Mars",
+  hostname: "marss-mac-mini",
+  sshUser: "demo",
+  sshPort: 22,
+  isDefaultLocal: false,
+  createdAt: now(),
+  updatedAt: now()
 };
 
 const defaultSettings: AppSettings = {
@@ -135,10 +160,11 @@ function activity(type: ActivityEvent["type"], message: string, level: ActivityE
 
 class MockApi {
   private config: AppConfig = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     workspaces: [defaultWorkspace],
     projects: [demoProject],
     processes: demoProcesses,
+    machines: [defaultLocalMachine, demoMarsMachine],
     settings: defaultSettings,
     lastSelectedProjectId: demoProject.id,
     activity: [activity("project_created", "Demo workspace loaded", "info", demoProject.id)]
@@ -193,6 +219,69 @@ class MockApi {
   deleteWorkspace(workspaceId: ID) {
     this.config.workspaces = this.config.workspaces.filter((workspace) => workspace.id !== workspaceId || workspace.isDefault);
     return Promise.resolve(this.ok(true));
+  }
+
+  listMachines() {
+    return Promise.resolve(this.ok([...this.config.machines]));
+  }
+
+  createMachine(input: MachineFormInput) {
+    if (!input.name.trim() || !input.hostname.trim() || !input.sshUser.trim()) {
+      return Promise.resolve(this.error<Machine>("INVALID_MACHINE_INPUT", "Name, hostname, and SSH user are required"));
+    }
+    const machine: Machine = {
+      id: id("machine"),
+      name: input.name.trim(),
+      hostname: input.hostname.trim(),
+      sshUser: input.sshUser.trim(),
+      sshPort: input.sshPort ?? 22,
+      sshKeyPath: input.sshKeyPath?.trim() || undefined,
+      isDefaultLocal: false,
+      createdAt: now(),
+      updatedAt: now()
+    };
+    this.config.machines.push(machine);
+    return Promise.resolve(this.ok(machine));
+  }
+
+  updateMachine(machine: Machine) {
+    this.config.machines = this.config.machines.map((item) => {
+      if (item.id !== machine.id) return item;
+      const next = { ...machine, updatedAt: now() };
+      if (item.isDefaultLocal) {
+        next.isDefaultLocal = true;
+        next.id = item.id;
+      }
+      return next;
+    });
+    const updated = this.config.machines.find((item) => item.id === machine.id) ?? machine;
+    return Promise.resolve(this.ok(updated));
+  }
+
+  deleteMachine(machineId: ID) {
+    const target = this.config.machines.find((machine) => machine.id === machineId);
+    if (!target) {
+      return Promise.resolve(this.error<boolean>("MACHINE_NOT_FOUND", "Machine not found"));
+    }
+    if (target.isDefaultLocal) {
+      return Promise.resolve(this.error<boolean>("DEFAULT_MACHINE_LOCKED", "The default local machine cannot be deleted"));
+    }
+    const referencing = this.config.processes.filter((process) => process.machineId === machineId).map((process) => process.name);
+    if (referencing.length > 0) {
+      return Promise.resolve(this.error<boolean>("MACHINE_IN_USE", `Used by: ${referencing.join(", ")}`));
+    }
+    this.config.machines = this.config.machines.filter((machine) => machine.id !== machineId);
+    return Promise.resolve(this.ok(true));
+  }
+
+  testMachineConnection(machineId: ID) {
+    const machine = this.config.machines.find((item) => item.id === machineId);
+    if (!machine) {
+      return Promise.resolve(this.error<MachineConnectionResult>("MACHINE_NOT_FOUND", "Machine not found"));
+    }
+    return Promise.resolve(
+      this.ok<MachineConnectionResult>({ ok: true, latencyMs: machine.isDefaultLocal ? 0 : 42, detail: "mocked" })
+    );
   }
 
   listProjects() {
@@ -532,6 +621,18 @@ class MockApi {
         : process.env
     }));
     return Promise.resolve(this.ok(JSON.stringify({ ...this.config, processes }, null, 2)));
+  }
+
+  logFrontendError() {
+    return Promise.resolve(this.ok(true));
+  }
+
+  getRecentFrontendErrors() {
+    return Promise.resolve(this.ok([] as Array<{
+      source: string;
+      message: string;
+      timestamp: string;
+    }>));
   }
 
   getDashboardSummary(): Promise<ApiResponse<DashboardSummary>> {

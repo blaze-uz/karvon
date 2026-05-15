@@ -1,8 +1,9 @@
 use crate::{
     mediaguard_preset,
     models::{
-        ApiError, ApiResponse, AppConfig, AppSettings, DashboardSummary, Id, MetricSample,
-        ProcessDefinition, ProcessFormInput, Project, ProjectFormInput, ValidationResult, Workspace,
+        ApiError, ApiResponse, AppConfig, AppSettings, DashboardSummary, Id, Machine,
+        MachineConnectionResult, MachineFormInput, MetricSample, ProcessDefinition,
+        ProcessFormInput, Project, ProjectFormInput, ValidationResult, Workspace,
     },
     process_manager,
     state::{app_state, AppState},
@@ -87,6 +88,134 @@ pub async fn delete_workspace(app: AppHandle, workspace_id: Id) -> ApiResponse<b
         .projects
         .retain(|project| project.workspace_id != workspace_id);
     save_response(&app, &config, true)
+}
+
+#[tauri::command]
+pub async fn list_machines() -> ApiResponse<Vec<Machine>> {
+    let state = app_state();
+    let machines = state.config.read().await.machines.clone();
+    ApiResponse::ok(machines)
+}
+
+#[tauri::command]
+pub async fn create_machine(app: AppHandle, input: MachineFormInput) -> ApiResponse<Machine> {
+    if input.name.trim().is_empty()
+        || input.hostname.trim().is_empty()
+        || input.ssh_user.trim().is_empty()
+    {
+        return ApiResponse::err(ApiError::new(
+            "INVALID_MACHINE_INPUT",
+            "Name, hostname, and SSH user are required",
+            false,
+        ));
+    }
+    let state = app_state();
+    let now = Utc::now();
+    let machine = Machine {
+        id: storage::id("machine"),
+        name: input.name.trim().to_string(),
+        hostname: input.hostname.trim().to_string(),
+        ssh_user: input.ssh_user.trim().to_string(),
+        ssh_port: input.ssh_port,
+        ssh_key_path: input.ssh_key_path.filter(|p| !p.trim().is_empty()),
+        is_default_local: false,
+        created_at: now,
+        updated_at: now,
+    };
+    let mut config = state.config.write().await;
+    config.machines.push(machine.clone());
+    save_response(&app, &config, machine)
+}
+
+#[tauri::command]
+pub async fn update_machine(app: AppHandle, machine: Machine) -> ApiResponse<Machine> {
+    let state = app_state();
+    let mut config = state.config.write().await;
+    let mut updated = machine;
+    updated.updated_at = Utc::now();
+    if let Some(existing) = config
+        .machines
+        .iter_mut()
+        .find(|item| item.id == updated.id)
+    {
+        if existing.is_default_local {
+            updated.is_default_local = true;
+            updated.id = existing.id.clone();
+        }
+        *existing = updated.clone();
+        save_response(&app, &config, updated)
+    } else {
+        ApiResponse::err(ApiError::new(
+            "MACHINE_NOT_FOUND",
+            "Machine not found",
+            false,
+        ))
+    }
+}
+
+#[tauri::command]
+pub async fn delete_machine(app: AppHandle, machine_id: Id) -> ApiResponse<bool> {
+    let state = app_state();
+    let mut config = state.config.write().await;
+    let target = config.machines.iter().find(|m| m.id == machine_id).cloned();
+    let Some(target) = target else {
+        return ApiResponse::err(ApiError::new(
+            "MACHINE_NOT_FOUND",
+            "Machine not found",
+            false,
+        ));
+    };
+    if target.is_default_local {
+        return ApiResponse::err(ApiError::new(
+            "DEFAULT_MACHINE_LOCKED",
+            "The default local machine cannot be deleted",
+            false,
+        ));
+    }
+    let referencing: Vec<String> = config
+        .processes
+        .iter()
+        .filter(|process| process.machine_id.as_deref() == Some(machine_id.as_str()))
+        .map(|process| process.name.clone())
+        .collect();
+    if !referencing.is_empty() {
+        return ApiResponse::err(ApiError::with_details(
+            "MACHINE_IN_USE",
+            "Machine is referenced by one or more processes",
+            referencing.join(", "),
+            false,
+        ));
+    }
+    config.machines.retain(|m| m.id != machine_id);
+    save_response(&app, &config, true)
+}
+
+#[tauri::command]
+pub async fn test_machine_connection(machine_id: Id) -> ApiResponse<MachineConnectionResult> {
+    let state = app_state();
+    let machine = state
+        .config
+        .read()
+        .await
+        .machines
+        .iter()
+        .find(|m| m.id == machine_id)
+        .cloned();
+    let Some(machine) = machine else {
+        return ApiResponse::err(ApiError::new(
+            "MACHINE_NOT_FOUND",
+            "Machine not found",
+            false,
+        ));
+    };
+    if machine.is_default_local {
+        return ApiResponse::ok(MachineConnectionResult {
+            ok: true,
+            latency_ms: 0,
+            detail: "local".to_string(),
+        });
+    }
+    ApiResponse::ok(crate::ssh_executor::test_connection(&machine).await)
 }
 
 #[tauri::command]
@@ -307,6 +436,7 @@ pub async fn create_process_definition(
         log_mode: input.log_mode,
         group: input.group,
         visible: input.visible,
+        machine_id: input.machine_id,
         created_at: now,
         updated_at: now,
     };
@@ -353,6 +483,7 @@ pub async fn update_process_definition(
         log_mode: process.log_mode.clone(),
         group: process.group.clone(),
         visible: process.visible,
+        machine_id: process.machine_id.clone(),
     };
     let validation = validate_process_definition(&state, Some(&process.id), &input).await;
     if !validation.valid {
@@ -737,6 +868,23 @@ pub async fn import_config(app: AppHandle, config: AppConfig) -> ApiResponse<App
         reset_runtime_registry_for_config(&app, &state, &config).await;
         save_response(&app, &config, config.clone())
     }
+}
+
+#[tauri::command]
+pub async fn log_frontend_error(
+    app: AppHandle,
+    record: crate::models::FrontendErrorRecord,
+) -> ApiResponse<bool> {
+    let state = app_state();
+    process_manager::record_frontend_error(&app, &state, record).await;
+    ApiResponse::ok(true)
+}
+
+#[tauri::command]
+pub async fn get_recent_frontend_errors() -> ApiResponse<Vec<crate::models::FrontendErrorRecord>> {
+    let state = app_state();
+    let errors = process_manager::recent_frontend_errors(&state).await;
+    ApiResponse::ok(errors)
 }
 
 #[tauri::command]

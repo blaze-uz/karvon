@@ -3,11 +3,15 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 pub type Id = String;
-pub const CURRENT_CONFIG_SCHEMA_VERSION: u32 = 2;
+pub const CURRENT_CONFIG_SCHEMA_VERSION: u32 = 3;
 pub const DEFAULT_LOCAL_MACHINE_ID: &str = "machine_local";
 
 pub fn default_ssh_port() -> u16 {
     22
+}
+
+pub fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -142,6 +146,8 @@ pub struct Project {
     pub auto_start: bool,
     pub startup_order: i32,
     pub memory_limit_mb: Option<u64>,
+    #[serde(default = "default_true")]
+    pub auto_restart_on_deploy: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -469,6 +475,8 @@ pub struct AppConfig {
     pub processes: Vec<ProcessDefinition>,
     #[serde(default)]
     pub machines: Vec<Machine>,
+    #[serde(default)]
+    pub deploy_scripts: Vec<DeployScript>,
     pub settings: AppSettings,
     pub last_selected_project_id: Option<Id>,
     pub last_selected_process_id: Option<Id>,
@@ -497,6 +505,7 @@ impl Default for AppConfig {
             projects: vec![],
             processes: vec![],
             machines: vec![Machine::default_local(now)],
+            deploy_scripts: vec![],
             settings: AppSettings::default(),
             last_selected_project_id: None,
             last_selected_process_id: None,
@@ -585,6 +594,124 @@ pub struct ValidationResult {
     pub valid: bool,
     pub errors: Vec<String>,
     pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DeployStage {
+    Pre,
+    Main,
+    Post,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeployScript {
+    pub id: Id,
+    pub project_id: Id,
+    pub name: String,
+    pub stage: DeployStage,
+    pub order: i32,
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_directory: Option<String>,
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine_id: Option<Id>,
+    #[serde(default)]
+    pub continue_on_error: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeployScriptFormInput {
+    pub project_id: Id,
+    pub name: String,
+    pub stage: DeployStage,
+    #[serde(default)]
+    pub order: Option<i32>,
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub working_directory: Option<String>,
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+    #[serde(default)]
+    pub machine_id: Option<Id>,
+    #[serde(default)]
+    pub continue_on_error: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeployStatus {
+    Idle,
+    Running,
+    Success,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeployScriptStatus {
+    Pending,
+    Running,
+    Success,
+    Failed,
+    Skipped,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeployScriptResult {
+    pub script_id: Id,
+    pub status: DeployScriptStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeployRunState {
+    pub project_id: Id,
+    pub status: DeployStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_script_id: Option<Id>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub script_results: Vec<DeployScriptResult>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+}
+
+impl DeployRunState {
+    pub fn idle(project_id: impl Into<Id>) -> Self {
+        Self {
+            project_id: project_id.into(),
+            status: DeployStatus::Idle,
+            current_script_id: None,
+            started_at: None,
+            completed_at: None,
+            script_results: vec![],
+            last_error: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

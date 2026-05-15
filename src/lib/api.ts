@@ -6,6 +6,9 @@ import type {
   AppConfig,
   AppSettings,
   DashboardSummary,
+  DeployRunState,
+  DeployScript,
+  DeployScriptFormInput,
   ExternalProcess,
   ID,
   LogEntry,
@@ -96,6 +99,8 @@ export const api = {
   applyMediaGuardPreset: (basePath?: string) => command<AppConfig>("apply_media_guard_preset", { basePath }),
   importConfig: (config: AppConfig) => command<AppConfig>("import_config", { config }),
   exportConfig: (redactSecrets = true) => command<string>("export_config", { redactSecrets }),
+  exportConfigToPath: (path: string, redactSecrets = true) =>
+    command<string>("export_config_to_path", { path, redactSecrets }),
   getDashboardSummary: () => command<DashboardSummary>("get_dashboard_summary"),
   getRecentFrontendErrors: () =>
     command<Array<{
@@ -105,7 +110,17 @@ export const api = {
       componentStack?: string;
       timestamp: string;
       url?: string;
-    }>>("get_recent_frontend_errors")
+    }>>("get_recent_frontend_errors"),
+  listDeployScripts: (projectId: ID) => command<DeployScript[]>("list_deploy_scripts", { projectId }),
+  createDeployScript: (input: DeployScriptFormInput) => command<DeployScript>("create_deploy_script", { input }),
+  updateDeployScript: (script: DeployScript) => command<DeployScript>("update_deploy_script", { script }),
+  deleteDeployScript: (scriptId: ID) => command<boolean>("delete_deploy_script", { scriptId }),
+  reorderDeployScripts: (projectId: ID, orderedIds: ID[]) =>
+    command<DeployScript[]>("reorder_deploy_scripts", { projectId, orderedIds }),
+  deployProject: (projectId: ID) => command<DeployRunState>("deploy_project", { projectId }),
+  cancelDeploy: (projectId: ID) => command<DeployRunState>("cancel_deploy", { projectId }),
+  getDeployState: (projectId: ID) => command<DeployRunState | null>("get_deploy_state", { projectId }),
+  getAllDeployStates: () => command<DeployRunState[]>("get_all_deploy_states")
 };
 
 export class ApiCallError extends Error {

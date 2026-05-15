@@ -1,13 +1,13 @@
 use crate::models::{
-    AppConfig, FrontendErrorRecord, Id, LogEntry, MetricSample, ProcessRuntimeState,
-    RuntimeProcessRecord,
+    AppConfig, DeployRunState, FrontendErrorRecord, Id, LogEntry, MetricSample,
+    ProcessRuntimeState, RuntimeProcessRecord,
 };
 use std::sync::OnceLock;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     sync::Arc,
 };
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{watch, Mutex, RwLock};
 
 pub const FRONTEND_ERROR_RETENTION: usize = 100;
 
@@ -23,6 +23,8 @@ pub struct RuntimeRegistry {
     pub frontend_errors: Arc<RwLock<VecDeque<FrontendErrorRecord>>>,
     pub log_batchers: Arc<RwLock<HashMap<Id, Arc<Mutex<Vec<LogEntry>>>>>>,
     pub remote_pids: Arc<RwLock<HashMap<Id, u32>>>,
+    pub deploy_states: Arc<RwLock<HashMap<Id, DeployRunState>>>,
+    pub deploy_cancel: Arc<RwLock<HashMap<Id, watch::Sender<bool>>>>,
 }
 
 impl RuntimeRegistry {
@@ -58,6 +60,8 @@ impl RuntimeRegistry {
             ))),
             log_batchers: Arc::new(RwLock::new(HashMap::new())),
             remote_pids: Arc::new(RwLock::new(HashMap::new())),
+            deploy_states: Arc::new(RwLock::new(HashMap::new())),
+            deploy_cancel: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 }

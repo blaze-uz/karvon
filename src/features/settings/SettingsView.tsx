@@ -1,6 +1,8 @@
 import type { ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
 import { Download, FolderOpen, RefreshCw, RotateCcw, Upload } from "lucide-react";
+import { save } from "@tauri-apps/plugin-dialog";
+import { api } from "../../lib/api";
 import { getLaunchOnLoginEnabled, setLaunchOnLoginEnabled } from "../../lib/autostart";
 import { selectFolder } from "../../lib/folderPicker";
 import { ensureNotificationPermission } from "../../lib/notifications";
@@ -24,6 +26,7 @@ export function SettingsView() {
   const projects = useOrchestratorStore((state) => state.projects);
   const updateSettings = useOrchestratorStore((state) => state.updateSettings);
   const exportConfig = useOrchestratorStore((state) => state.exportConfig);
+  const exportConfigToPath = useOrchestratorStore((state) => state.exportConfigToPath);
   const importConfig = useOrchestratorStore((state) => state.importConfig);
   const applyMediaGuardPreset = useOrchestratorStore((state) => state.applyMediaGuardPreset);
   const activity = useOrchestratorStore((state) => state.activity);
@@ -33,6 +36,8 @@ export function SettingsView() {
   const [activeTab, setActiveTab] = useState<SettingsTab>("appearance");
   const [redactSecrets, setRedactSecrets] = useState(true);
   const [importError, setImportError] = useState<string>();
+  const [exportError, setExportError] = useState<string>();
+  const [exportMessage, setExportMessage] = useState<string>();
   const [presetMessage, setPresetMessage] = useState<string>();
   const [integrationError, setIntegrationError] = useState<string>();
 
@@ -87,14 +92,31 @@ export function SettingsView() {
   };
 
   const downloadConfig = async () => {
-    const content = await exportConfig(redactSecrets);
-    const blob = new Blob([content], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = "app-orchestrator.config.json";
-    link.click();
-    URL.revokeObjectURL(url);
+    setExportError(undefined);
+    setExportMessage(undefined);
+    try {
+      if (api.isTauri) {
+        const path = await save({
+          title: "Export configuration",
+          defaultPath: "app-orchestrator.config.json",
+          filters: [{ name: "JSON", extensions: ["json"] }]
+        });
+        if (!path) return;
+        const savedPath = await exportConfigToPath(path, redactSecrets);
+        setExportMessage(`Saved to ${savedPath}`);
+      } else {
+        const content = await exportConfig(redactSecrets);
+        const blob = new Blob([content], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = "app-orchestrator.config.json";
+        link.click();
+        URL.revokeObjectURL(url);
+      }
+    } catch (error) {
+      setExportError(error instanceof Error ? error.message : "Export failed");
+    }
   };
 
   const readImport = async (file?: File) => {
@@ -282,7 +304,9 @@ export function SettingsView() {
               </SettingsRow>
             </SettingsGroup>
             {presetMessage ? <p className="solo-settings-success">{presetMessage}</p> : null}
+            {exportMessage ? <p className="solo-settings-success">{exportMessage}</p> : null}
             {importError ? <p className="solo-settings-error">{importError}</p> : null}
+            {exportError ? <p className="solo-settings-error">{exportError}</p> : null}
           </SettingsTabPanel>
         ) : null}
 

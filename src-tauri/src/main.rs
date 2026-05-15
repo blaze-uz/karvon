@@ -1,4 +1,5 @@
 mod commands;
+mod deploy;
 mod health;
 mod mediaguard_preset;
 mod models;
@@ -142,8 +143,18 @@ pub fn run() {
             commands::apply_media_guard_preset,
             commands::import_config,
             commands::export_config,
+            commands::export_config_to_path,
             commands::log_frontend_error,
-            commands::get_recent_frontend_errors
+            commands::get_recent_frontend_errors,
+            commands::list_deploy_scripts,
+            commands::create_deploy_script,
+            commands::update_deploy_script,
+            commands::delete_deploy_script,
+            commands::reorder_deploy_scripts,
+            commands::deploy_project,
+            commands::cancel_deploy,
+            commands::get_deploy_state,
+            commands::get_all_deploy_states
         ])
         .build(tauri::generate_context!())
         .expect("error while building App Orchestrator");

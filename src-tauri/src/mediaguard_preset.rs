@@ -67,6 +67,8 @@ pub fn apply(config: &mut AppConfig, base_path: Option<String>) {
     config.processes.extend(processes);
     config.projects.sort_by_key(|project| project.startup_order);
 
+    assign_machines_for_preset(config);
+
     if config
         .last_selected_project_id
         .as_ref()
@@ -97,6 +99,41 @@ fn desired_project_ids() -> HashSet<&'static str> {
     ]
     .into_iter()
     .collect()
+}
+
+fn assign_machines_for_preset(config: &mut AppConfig) {
+    let mars_id = find_machine_id_by_name(config, &["mars", "marss"]);
+    let luna_id = find_machine_id_by_name(config, &["luna", "lunas"]);
+    if mars_id.is_none() && luna_id.is_none() {
+        return;
+    }
+    for process in &mut config.processes {
+        let target = match process.project_id.as_str() {
+            PROJECT_YOUTUBE => mars_id.clone(),
+            PROJECT_TELEGRAM | PROJECT_FACEBOOK | PROJECT_INSTAGRAM => luna_id.clone(),
+            _ => None,
+        };
+        if let Some(target) = target {
+            if process.machine_id.is_none() {
+                process.machine_id = Some(target);
+            }
+        }
+    }
+}
+
+fn find_machine_id_by_name(config: &AppConfig, candidates: &[&str]) -> Option<String> {
+    config
+        .machines
+        .iter()
+        .find(|machine| {
+            !machine.is_default_local
+                && candidates.iter().any(|candidate| {
+                    let lower_name = machine.name.to_lowercase();
+                    let lower_host = machine.hostname.to_lowercase();
+                    lower_name.contains(candidate) || lower_host.contains(candidate)
+                })
+        })
+        .map(|machine| machine.id.clone())
 }
 
 fn is_mediaguard_project(project: &Project, desired_project_ids: &HashSet<&str>) -> bool {
@@ -514,6 +551,7 @@ fn project(
         auto_start: false,
         startup_order,
         memory_limit_mb: None,
+        auto_restart_on_deploy: true,
         created_at,
         updated_at: now,
     }

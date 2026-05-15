@@ -11,6 +11,7 @@ import { isRuntimeBusy } from "../../lib/status";
 import { envToText, formatPath, formatRelativeTime, normalizeCliText, parseEnvInput, parseListInput } from "../../lib/time";
 import { useOrchestratorStore } from "../../stores/orchestratorStore";
 import type { ExternalProcess, ProcessDefinition, ProcessFormInput, ProcessRuntimeState } from "../../types/domain";
+import { DeploySection } from "./DeploySection";
 
 const technicalInputProps = {
   autoCapitalize: "off",
@@ -520,6 +521,8 @@ export function ProjectDetailView() {
               {!projectProcesses.length ? <p className="solo-empty-row">No commands configured.</p> : null}
             </div>
           </SoloSection>
+
+          <DeploySection project={project} />
 
           <SoloSection
             title="Other processes in this project"

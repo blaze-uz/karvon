@@ -4,6 +4,10 @@ import type {
   AppConfig,
   AppSettings,
   DashboardSummary,
+  DeployRunState,
+  DeployScript,
+  DeployScriptFormInput,
+  DeployScriptResult,
   ID,
   LogEntry,
   Machine,
@@ -79,6 +83,7 @@ const demoProject: Project = {
   autoStart: true,
   startupOrder: 1,
   memoryLimitMb: 2048,
+  autoRestartOnDeploy: true,
   createdAt: now(),
   updatedAt: now()
 };
@@ -158,19 +163,50 @@ function activity(type: ActivityEvent["type"], message: string, level: ActivityE
   return { id: id("activity"), timestamp: now(), type, message, level, projectId, processId };
 }
 
+const demoDeployScripts: DeployScript[] = [
+  {
+    id: "deploy_pull",
+    projectId: demoProject.id,
+    name: "Git pull",
+    stage: "main",
+    order: 0,
+    command: "git",
+    args: ["pull", "--ff-only"],
+    env: {},
+    continueOnError: false,
+    createdAt: now(),
+    updatedAt: now()
+  },
+  {
+    id: "deploy_install",
+    projectId: demoProject.id,
+    name: "Composer install",
+    stage: "main",
+    order: 1,
+    command: "composer",
+    args: ["install", "--no-dev", "--optimize-autoloader"],
+    env: {},
+    continueOnError: false,
+    createdAt: now(),
+    updatedAt: now()
+  }
+];
+
 class MockApi {
   private config: AppConfig = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     workspaces: [defaultWorkspace],
     projects: [demoProject],
     processes: demoProcesses,
     machines: [defaultLocalMachine, demoMarsMachine],
+    deployScripts: demoDeployScripts,
     settings: defaultSettings,
     lastSelectedProjectId: demoProject.id,
     activity: [activity("project_created", "Demo workspace loaded", "info", demoProject.id)]
   };
 
   private runtime = new Map<ID, ProcessRuntimeState>(initialRuntime.map((state) => [state.processId, state]));
+  private deployStates = new Map<ID, DeployRunState>();
   private logs: LogEntry[] = [];
   private handlers = new Map<string, Set<EventHandler<unknown>>>();
   private intervals = new Map<ID, number>();
@@ -301,6 +337,7 @@ class MockApi {
       autoStart: input.autoStart,
       startupOrder: input.startupOrder,
       memoryLimitMb: input.memoryLimitMb,
+      autoRestartOnDeploy: true,
       createdAt: now(),
       updatedAt: now()
     };
@@ -633,6 +670,191 @@ class MockApi {
       message: string;
       timestamp: string;
     }>));
+  }
+
+  listDeployScripts(projectId: ID) {
+    return Promise.resolve(this.ok(this.config.deployScripts.filter((script) => script.projectId === projectId)));
+  }
+
+  createDeployScript(input: DeployScriptFormInput) {
+    if (!input.name.trim() || !input.command.trim()) {
+      return Promise.resolve(this.error<DeployScript>("VALIDATION_FAILED", "Name and command are required"));
+    }
+    const order = input.order ?? Math.max(
+      -1,
+      ...this.config.deployScripts
+        .filter((script) => script.projectId === input.projectId && script.stage === input.stage)
+        .map((script) => script.order)
+    ) + 1;
+    const script: DeployScript = {
+      id: id("deploy"),
+      projectId: input.projectId,
+      name: input.name.trim(),
+      stage: input.stage,
+      order,
+      command: input.command.trim(),
+      args: input.args,
+      workingDirectory: input.workingDirectory?.trim() || undefined,
+      env: input.env,
+      machineId: input.machineId?.trim() || undefined,
+      continueOnError: input.continueOnError,
+      createdAt: now(),
+      updatedAt: now()
+    };
+    this.config.deployScripts.push(script);
+    return Promise.resolve(this.ok(script));
+  }
+
+  updateDeployScript(script: DeployScript) {
+    if (!script.name.trim() || !script.command.trim()) {
+      return Promise.resolve(this.error<DeployScript>("VALIDATION_FAILED", "Name and command are required"));
+    }
+    this.config.deployScripts = this.config.deployScripts.map((item) =>
+      item.id === script.id ? { ...script, updatedAt: now() } : item
+    );
+    return Promise.resolve(this.ok(script));
+  }
+
+  deleteDeployScript(scriptId: ID) {
+    const before = this.config.deployScripts.length;
+    this.config.deployScripts = this.config.deployScripts.filter((script) => script.id !== scriptId);
+    if (before === this.config.deployScripts.length) {
+      return Promise.resolve(this.error<boolean>("DEPLOY_SCRIPT_NOT_FOUND", "Deploy script not found"));
+    }
+    return Promise.resolve(this.ok(true));
+  }
+
+  reorderDeployScripts(projectId: ID, orderedIds: ID[]) {
+    orderedIds.forEach((scriptId, index) => {
+      const script = this.config.deployScripts.find((item) => item.id === scriptId && item.projectId === projectId);
+      if (script) {
+        script.order = index;
+        script.updatedAt = now();
+      }
+    });
+    return Promise.resolve(this.ok(this.config.deployScripts.filter((script) => script.projectId === projectId)));
+  }
+
+  deployProject(projectId: ID): Promise<ApiResponse<DeployRunState>> {
+    const project = this.config.projects.find((item) => item.id === projectId);
+    if (!project) return Promise.resolve(this.error("PROJECT_NOT_FOUND", "Project not found"));
+    const scripts = this.config.deployScripts
+      .filter((script) => script.projectId === projectId)
+      .slice()
+      .sort((a, b) => {
+        const stageOrder: Record<string, number> = { pre: 0, main: 1, post: 2 };
+        const stageDiff = stageOrder[a.stage] - stageOrder[b.stage];
+        return stageDiff !== 0 ? stageDiff : a.order - b.order;
+      });
+    if (!scripts.length) return Promise.resolve(this.error("DEPLOY_NO_SCRIPTS", "No deploy scripts configured"));
+
+    const run: DeployRunState = {
+      projectId,
+      status: "running",
+      startedAt: now(),
+      scriptResults: scripts.map((script) => ({
+        scriptId: script.id,
+        status: "pending"
+      }))
+    };
+    this.deployStates.set(projectId, run);
+    this.emit("deploy_state_changed", run);
+
+    let cursor = 0;
+    const runNext = () => {
+      const state = this.deployStates.get(projectId);
+      if (!state || state.status !== "running") return;
+      if (cursor >= scripts.length) {
+        const completed: DeployRunState = {
+          ...state,
+          status: "success",
+          currentScriptId: undefined,
+          completedAt: now()
+        };
+        this.deployStates.set(projectId, completed);
+        this.emit("deploy_state_changed", completed);
+        return;
+      }
+      const script = scripts[cursor];
+      const startedAt = now();
+      const startingResults: DeployScriptResult[] = state.scriptResults.map((result, index) =>
+        index === cursor ? { ...result, status: "running", startedAt } : result
+      );
+      const starting: DeployRunState = {
+        ...state,
+        currentScriptId: script.id,
+        scriptResults: startingResults
+      };
+      this.deployStates.set(projectId, starting);
+      this.emit("deploy_state_changed", starting);
+      this.emitDeployLog(projectId, script.id, "system", "info", `Running '${script.name}'`);
+
+      window.setTimeout(() => {
+        const current = this.deployStates.get(projectId);
+        if (!current || current.status !== "running") return;
+        this.emitDeployLog(projectId, script.id, "stdout", "info", `${script.command} ${script.args.join(" ")}`);
+        const completedAt = now();
+        const finishedResults: DeployScriptResult[] = current.scriptResults.map((result, index) =>
+          index === cursor
+            ? { ...result, status: "success", exitCode: 0, completedAt }
+            : result
+        );
+        this.deployStates.set(projectId, {
+          ...current,
+          scriptResults: finishedResults
+        });
+        this.emit("deploy_state_changed", this.deployStates.get(projectId)!);
+        this.emitDeployLog(projectId, script.id, "system", "info", `'${script.name}' completed (exit 0)`);
+        cursor += 1;
+        runNext();
+      }, 1200);
+    };
+    window.setTimeout(runNext, 200);
+
+    return Promise.resolve(this.ok(run));
+  }
+
+  cancelDeploy(projectId: ID): Promise<ApiResponse<DeployRunState>> {
+    const state = this.deployStates.get(projectId);
+    if (!state) return Promise.resolve(this.ok({ projectId, status: "idle", scriptResults: [] }));
+    if (state.status === "running") {
+      const cancelled: DeployRunState = {
+        ...state,
+        status: "cancelled",
+        completedAt: now(),
+        lastError: "Cancelled by user",
+        currentScriptId: undefined
+      };
+      this.deployStates.set(projectId, cancelled);
+      this.emit("deploy_state_changed", cancelled);
+      return Promise.resolve(this.ok(cancelled));
+    }
+    return Promise.resolve(this.ok(state));
+  }
+
+  getDeployState(projectId: ID) {
+    return Promise.resolve(this.ok(this.deployStates.get(projectId) ?? null));
+  }
+
+  getAllDeployStates() {
+    return Promise.resolve(this.ok([...this.deployStates.values()]));
+  }
+
+  private emitDeployLog(projectId: ID, scriptId: ID, stream: LogEntry["stream"], level: LogEntry["level"], message: string) {
+    const entry: LogEntry = {
+      id: id("log"),
+      processId: `deploy:${scriptId}`,
+      projectId,
+      timestamp: now(),
+      stream,
+      level,
+      message,
+      raw: message
+    };
+    this.logs.push(entry);
+    const retention = this.config.settings.logRetentionLines;
+    if (this.logs.length > retention) this.logs = this.logs.slice(-retention);
+    this.emit("process_log", entry);
   }
 
   getDashboardSummary(): Promise<ApiResponse<DashboardSummary>> {

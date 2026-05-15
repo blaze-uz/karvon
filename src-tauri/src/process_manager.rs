@@ -2800,13 +2800,13 @@ fn process_command_tokens(process: &ProcessDefinition) -> Result<Vec<String>, Ap
     Ok(tokens)
 }
 
-fn direct_process_command(tokens: &[String]) -> Command {
+pub(crate) fn direct_process_command(tokens: &[String]) -> Command {
     let mut command = Command::new(&tokens[0]);
     command.args(&tokens[1..]);
     command
 }
 
-fn shell_process_command(tokens: &[String]) -> Command {
+pub(crate) fn shell_process_command(tokens: &[String]) -> Command {
     let mut command = Command::new("/bin/zsh");
     command
         .arg("-lc")
@@ -2814,7 +2814,7 @@ fn shell_process_command(tokens: &[String]) -> Command {
     command
 }
 
-fn configure_process_command(
+pub(crate) fn configure_process_command(
     command: &mut Command,
     cwd: &str,
     env: &HashMap<String, String>,
@@ -3251,7 +3251,7 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
-fn split_command_words(input: &str) -> Result<Vec<String>, String> {
+pub(crate) fn split_command_words(input: &str) -> Result<Vec<String>, String> {
     let input = normalize_command_dashes(input.trim());
     let mut tokens = Vec::new();
     let mut current = String::new();
@@ -3302,11 +3302,11 @@ fn split_command_words(input: &str) -> Result<Vec<String>, String> {
     Ok(tokens)
 }
 
-fn normalize_command_dashes(value: &str) -> String {
+pub(crate) fn normalize_command_dashes(value: &str) -> String {
     value.replace('—', "--").replace('–', "-").replace('−', "-")
 }
 
-fn display_command(tokens: &[String]) -> String {
+pub(crate) fn display_command(tokens: &[String]) -> String {
     tokens
         .iter()
         .map(|token| shell_quote(token))

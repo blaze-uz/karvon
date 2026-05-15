@@ -1,9 +1,11 @@
 use crate::{
+    deploy,
     mediaguard_preset,
     models::{
-        ApiError, ApiResponse, AppConfig, AppSettings, DashboardSummary, Id, Machine,
-        MachineConnectionResult, MachineFormInput, MetricSample, ProcessDefinition,
-        ProcessFormInput, Project, ProjectFormInput, ValidationResult, Workspace,
+        ApiError, ApiResponse, AppConfig, AppSettings, DashboardSummary, DeployRunState,
+        DeployScript, DeployScriptFormInput, Id, Machine, MachineConnectionResult,
+        MachineFormInput, MetricSample, ProcessDefinition, ProcessFormInput, Project,
+        ProjectFormInput, ValidationResult, Workspace,
     },
     process_manager,
     state::{app_state, AppState},
@@ -277,6 +279,7 @@ pub async fn create_project(app: AppHandle, input: ProjectFormInput) -> ApiRespo
         auto_start: input.auto_start,
         startup_order: input.startup_order,
         memory_limit_mb: input.memory_limit_mb,
+        auto_restart_on_deploy: true,
         created_at: now,
         updated_at: now,
     };
@@ -916,6 +919,46 @@ pub async fn export_config(redact_secrets: bool) -> ApiResponse<String> {
     }
 }
 
+#[tauri::command]
+pub async fn export_config_to_path(path: String, redact_secrets: bool) -> ApiResponse<String> {
+    let state = app_state();
+    let mut config = state.config.read().await.clone();
+    if redact_secrets {
+        for process in &mut config.processes {
+            for (key, value) in process.env.iter_mut() {
+                let key_lower = key.to_lowercase();
+                if key_lower.contains("token")
+                    || key_lower.contains("secret")
+                    || key_lower.contains("password")
+                    || key_lower.contains("key")
+                {
+                    *value = "REDACTED".to_string();
+                }
+            }
+        }
+    }
+    let content = match serde_json::to_string_pretty(&config) {
+        Ok(content) => content,
+        Err(error) => {
+            return ApiResponse::err(ApiError::with_details(
+                "CONFIG_SERIALIZATION_FAILED",
+                "Unable to export config",
+                error,
+                false,
+            ));
+        }
+    };
+    match std::fs::write(&path, format!("{content}\n")) {
+        Ok(_) => ApiResponse::ok(path),
+        Err(error) => ApiResponse::err(ApiError::with_details(
+            "CONFIG_WRITE_FAILED",
+            "Unable to write config file",
+            error,
+            true,
+        )),
+    }
+}
+
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceInput {
@@ -1032,4 +1075,197 @@ async fn validate_process_definition(
         errors,
         warnings: vec![],
     }
+}
+
+#[tauri::command]
+pub async fn list_deploy_scripts(project_id: Id) -> ApiResponse<Vec<DeployScript>> {
+    let state = app_state();
+    let scripts: Vec<DeployScript> = state
+        .config
+        .read()
+        .await
+        .deploy_scripts
+        .iter()
+        .filter(|script| script.project_id == project_id)
+        .cloned()
+        .collect();
+    ApiResponse::ok(scripts)
+}
+
+#[tauri::command]
+pub async fn create_deploy_script(
+    app: AppHandle,
+    input: DeployScriptFormInput,
+) -> ApiResponse<DeployScript> {
+    if input.name.trim().is_empty() || input.command.trim().is_empty() {
+        return ApiResponse::err(ApiError::new(
+            "VALIDATION_FAILED",
+            "Deploy script name and command are required",
+            false,
+        ));
+    }
+    let state = app_state();
+    let now = Utc::now();
+    let mut config = state.config.write().await;
+    if !config
+        .projects
+        .iter()
+        .any(|project| project.id == input.project_id)
+    {
+        return ApiResponse::err(ApiError::new(
+            "PROJECT_NOT_FOUND",
+            "Project not found",
+            false,
+        ));
+    }
+    let next_order = input.order.unwrap_or_else(|| {
+        config
+            .deploy_scripts
+            .iter()
+            .filter(|script| script.project_id == input.project_id && script.stage == input.stage)
+            .map(|script| script.order)
+            .max()
+            .map(|max| max + 1)
+            .unwrap_or(0)
+    });
+    let script = DeployScript {
+        id: storage::id("deploy"),
+        project_id: input.project_id,
+        name: input.name.trim().to_string(),
+        stage: input.stage,
+        order: next_order,
+        command: input.command.trim().to_string(),
+        args: input.args,
+        working_directory: input
+            .working_directory
+            .and_then(|value| {
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                }
+            }),
+        env: input.env,
+        machine_id: input.machine_id.and_then(|value| {
+            if value.trim().is_empty() {
+                None
+            } else {
+                Some(value)
+            }
+        }),
+        continue_on_error: input.continue_on_error,
+        created_at: now,
+        updated_at: now,
+    };
+    config.deploy_scripts.push(script.clone());
+    save_response(&app, &config, script)
+}
+
+#[tauri::command]
+pub async fn update_deploy_script(
+    app: AppHandle,
+    script: DeployScript,
+) -> ApiResponse<DeployScript> {
+    if script.name.trim().is_empty() || script.command.trim().is_empty() {
+        return ApiResponse::err(ApiError::new(
+            "VALIDATION_FAILED",
+            "Deploy script name and command are required",
+            false,
+        ));
+    }
+    let state = app_state();
+    let mut config = state.config.write().await;
+    let mut updated = script;
+    updated.updated_at = Utc::now();
+    if let Some(item) = config
+        .deploy_scripts
+        .iter_mut()
+        .find(|item| item.id == updated.id)
+    {
+        *item = updated.clone();
+        save_response(&app, &config, updated)
+    } else {
+        ApiResponse::err(ApiError::new(
+            "DEPLOY_SCRIPT_NOT_FOUND",
+            "Deploy script not found",
+            false,
+        ))
+    }
+}
+
+#[tauri::command]
+pub async fn delete_deploy_script(app: AppHandle, script_id: Id) -> ApiResponse<bool> {
+    let state = app_state();
+    let mut config = state.config.write().await;
+    let before = config.deploy_scripts.len();
+    config.deploy_scripts.retain(|script| script.id != script_id);
+    if before == config.deploy_scripts.len() {
+        return ApiResponse::err(ApiError::new(
+            "DEPLOY_SCRIPT_NOT_FOUND",
+            "Deploy script not found",
+            false,
+        ));
+    }
+    save_response(&app, &config, true)
+}
+
+#[tauri::command]
+pub async fn reorder_deploy_scripts(
+    app: AppHandle,
+    project_id: Id,
+    ordered_ids: Vec<Id>,
+) -> ApiResponse<Vec<DeployScript>> {
+    let state = app_state();
+    let mut config = state.config.write().await;
+    let now = Utc::now();
+    for (index, id) in ordered_ids.iter().enumerate() {
+        if let Some(script) = config
+            .deploy_scripts
+            .iter_mut()
+            .find(|script| script.id == *id && script.project_id == project_id)
+        {
+            script.order = index as i32;
+            script.updated_at = now;
+        }
+    }
+    let scripts: Vec<DeployScript> = config
+        .deploy_scripts
+        .iter()
+        .filter(|script| script.project_id == project_id)
+        .cloned()
+        .collect();
+    save_response(&app, &config, scripts)
+}
+
+#[tauri::command]
+pub async fn deploy_project(app: AppHandle, project_id: Id) -> ApiResponse<DeployRunState> {
+    let state = app_state();
+    match deploy::start_deployment(app, state, project_id).await {
+        Ok(run) => ApiResponse::ok(run),
+        Err(error) => ApiResponse::err(error),
+    }
+}
+
+#[tauri::command]
+pub async fn cancel_deploy(app: AppHandle, project_id: Id) -> ApiResponse<DeployRunState> {
+    let state = app_state();
+    match deploy::cancel_deployment(app, state, project_id).await {
+        Ok(run) => ApiResponse::ok(run),
+        Err(error) => ApiResponse::err(error),
+    }
+}
+
+#[tauri::command]
+pub async fn get_deploy_state(project_id: Id) -> ApiResponse<Option<DeployRunState>> {
+    let state = app_state();
+    let run = deploy::get_state(&state, &project_id).await;
+    ApiResponse::ok(run)
+}
+
+#[tauri::command]
+pub async fn get_all_deploy_states() -> ApiResponse<Vec<DeployRunState>> {
+    let state = app_state();
+    let runs = deploy::all_states(&state).await;
+    ApiResponse::ok(runs)
 }

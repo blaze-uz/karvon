@@ -7,6 +7,9 @@ import type {
   AppConfig,
   AppSettings,
   DashboardSummary,
+  DeployRunState,
+  DeployScript,
+  DeployScriptFormInput,
   ExternalProcess,
   ID,
   LogEntry,
@@ -54,6 +57,8 @@ interface OrchestratorState {
   processes: ProcessDefinition[];
   runtimeStates: Record<ID, ProcessRuntimeState>;
   externalProcesses: Record<ID, ExternalProcess[]>;
+  deployScripts: Record<ID, DeployScript[]>;
+  deployStates: Record<ID, DeployRunState>;
   logs: LogEntry[];
   activity: ActivityEvent[];
   metricsHistory: Record<ID, MetricSample[]>;
@@ -99,10 +104,18 @@ interface OrchestratorState {
   applyMediaGuardPreset: (basePath?: string) => Promise<boolean>;
   importConfig: (config: AppConfig) => Promise<void>;
   exportConfig: (redactSecrets?: boolean) => Promise<string>;
+  exportConfigToPath: (path: string, redactSecrets?: boolean) => Promise<string>;
   exportLogs: () => Promise<string>;
   updateSettings: (settings: AppSettings) => Promise<void>;
   setProjectFilters: (filters: Partial<ProjectFilters>) => void;
   setLogFilters: (filters: Partial<LogFilters>) => void;
+  loadDeployScripts: (projectId: ID) => Promise<void>;
+  createDeployScript: (input: DeployScriptFormInput) => Promise<boolean>;
+  updateDeployScript: (script: DeployScript) => Promise<void>;
+  deleteDeployScript: (scriptId: ID, projectId: ID) => Promise<void>;
+  reorderDeployScripts: (projectId: ID, orderedIds: ID[]) => Promise<void>;
+  deployProject: (projectId: ID) => Promise<void>;
+  cancelDeploy: (projectId: ID) => Promise<void>;
 }
 
 const defaultProjectFilters: ProjectFilters = {
@@ -216,6 +229,8 @@ export const useOrchestratorStore = create<OrchestratorState>((set, get) => ({
   processes: [],
   runtimeStates: {},
   externalProcesses: {},
+  deployScripts: {},
+  deployStates: {},
   logs: [],
   activity: [],
   metricsHistory: {},
@@ -263,27 +278,45 @@ export const useOrchestratorStore = create<OrchestratorState>((set, get) => ({
         }));
       })
     );
+    api.on<DeployRunState>(
+      "deploy_state_changed",
+      safeListener<DeployRunState>("deploy_state_changed", (run) => {
+        if (!run?.projectId) return;
+        set((state) => ({ deployStates: { ...state.deployStates, [run.projectId]: run } }));
+      })
+    );
     await get().refreshAll();
     set({ booted: true });
   },
   refreshAll: async () => {
     await safeAction(set, { key: "refresh", label: "Refreshing workspace" }, async () => {
-      const [config, workspaces, machines, projects, runtimes, logs, dashboard] = await Promise.all([
+      const [config, workspaces, machines, projects, runtimes, logs, dashboard, deployStates] = await Promise.all([
         api.getConfig().then(unwrap),
         api.listWorkspaces().then(unwrap),
         api.listMachines().then(unwrap),
         api.listProjects().then(unwrap),
         api.getAllRuntimeStates().then(unwrap),
         api.getLogHistory({ limit: 1000, since: recentLogHistorySince() }).then(unwrap),
-        api.getDashboardSummary().then(unwrap)
+        api.getDashboardSummary().then(unwrap),
+        api.getAllDeployStates().then(unwrap)
       ]);
       const selectedProjectId = config.lastSelectedProjectId ?? projects[0]?.id;
+      const deployScripts: Record<ID, DeployScript[]> = {};
+      for (const script of config.deployScripts ?? []) {
+        const bucket = deployScripts[script.projectId] ?? (deployScripts[script.projectId] = []);
+        bucket.push(script);
+      }
       set({
         workspaces,
         machines,
         projects,
         processes: config.processes,
         runtimeStates: mergeRuntime(runtimes),
+        deployScripts,
+        deployStates: deployStates.reduce<Record<ID, DeployRunState>>((acc, run) => {
+          acc[run.projectId] = run;
+          return acc;
+        }, {}),
         logs,
         activity: config.activity,
         settings: config.settings,
@@ -517,6 +550,8 @@ export const useOrchestratorStore = create<OrchestratorState>((set, get) => ({
     });
   },
   exportConfig: async (redactSecrets = true) => api.exportConfig(redactSecrets).then(unwrap),
+  exportConfigToPath: async (path, redactSecrets = true) =>
+    api.exportConfigToPath(path, redactSecrets).then(unwrap),
   exportLogs: async () => api.exportLogs().then(unwrap),
   updateSettings: async (settings) => {
     await safeAction(set, { key: "settings", label: "Saving settings" }, async () => {
@@ -525,7 +560,74 @@ export const useOrchestratorStore = create<OrchestratorState>((set, get) => ({
     });
   },
   setProjectFilters: (filters) => set((state) => ({ projectFilters: { ...state.projectFilters, ...filters } })),
-  setLogFilters: (filters) => set((state) => ({ logFilters: { ...state.logFilters, ...filters } }))
+  setLogFilters: (filters) => set((state) => ({ logFilters: { ...state.logFilters, ...filters } })),
+  loadDeployScripts: async (projectId) => {
+    try {
+      const scripts = await api.listDeployScripts(projectId).then(unwrap);
+      set((state) => ({ deployScripts: { ...state.deployScripts, [projectId]: scripts } }));
+    } catch (error) {
+      set({ lastError: toOrchestratorError(error) });
+    }
+  },
+  createDeployScript: async (input) => {
+    const created = await safeAction(set, { key: "create-deploy-script", label: "Adding deploy script" }, async () => {
+      const script = await api.createDeployScript(input).then(unwrap);
+      set((state) => {
+        const bucket = state.deployScripts[script.projectId] ?? [];
+        return {
+          deployScripts: { ...state.deployScripts, [script.projectId]: [...bucket, script] }
+        };
+      });
+      return true;
+    });
+    return Boolean(created);
+  },
+  updateDeployScript: async (script) => {
+    await safeAction(set, { key: `update-deploy-script:${script.id}`, label: "Saving deploy script" }, async () => {
+      const saved = await api.updateDeployScript(script).then(unwrap);
+      set((state) => {
+        const bucket = state.deployScripts[saved.projectId] ?? [];
+        return {
+          deployScripts: {
+            ...state.deployScripts,
+            [saved.projectId]: bucket.map((item) => (item.id === saved.id ? saved : item))
+          }
+        };
+      });
+    });
+  },
+  deleteDeployScript: async (scriptId, projectId) => {
+    await safeAction(set, { key: `delete-deploy-script:${scriptId}`, label: "Deleting deploy script" }, async () => {
+      await api.deleteDeployScript(scriptId).then(unwrap);
+      set((state) => {
+        const bucket = state.deployScripts[projectId] ?? [];
+        return {
+          deployScripts: {
+            ...state.deployScripts,
+            [projectId]: bucket.filter((item) => item.id !== scriptId)
+          }
+        };
+      });
+    });
+  },
+  reorderDeployScripts: async (projectId, orderedIds) => {
+    await safeAction(set, { key: `reorder-deploy:${projectId}`, label: "Reordering deploy scripts" }, async () => {
+      const scripts = await api.reorderDeployScripts(projectId, orderedIds).then(unwrap);
+      set((state) => ({ deployScripts: { ...state.deployScripts, [projectId]: scripts } }));
+    });
+  },
+  deployProject: async (projectId) => {
+    await safeAction(set, { key: `deploy:${projectId}`, label: "Deploying project" }, async () => {
+      const run = await api.deployProject(projectId).then(unwrap);
+      set((state) => ({ deployStates: { ...state.deployStates, [projectId]: run } }));
+    });
+  },
+  cancelDeploy: async (projectId) => {
+    await safeAction(set, { key: `cancel-deploy:${projectId}`, label: "Cancelling deploy" }, async () => {
+      const run = await api.cancelDeploy(projectId).then(unwrap);
+      set((state) => ({ deployStates: { ...state.deployStates, [projectId]: run } }));
+    });
+  }
 }));
 
 export function selectCurrentProject(state: OrchestratorState): Project | undefined {

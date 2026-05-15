@@ -67,6 +67,7 @@ export interface Project {
   autoStart: boolean;
   startupOrder: number;
   memoryLimitMb?: number;
+  autoRestartOnDeploy: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -244,6 +245,7 @@ export interface AppConfig {
   projects: Project[];
   processes: ProcessDefinition[];
   machines: Machine[];
+  deployScripts: DeployScript[];
   settings: AppSettings;
   lastSelectedProjectId?: ID;
   lastSelectedProcessId?: ID;
@@ -331,4 +333,58 @@ export interface ValidationResult {
   valid: boolean;
   errors: string[];
   warnings: string[];
+}
+
+export type DeployStage = "pre" | "main" | "post";
+
+export type DeployStatus = "idle" | "running" | "success" | "failed" | "cancelled";
+
+export type DeployScriptStatus = "pending" | "running" | "success" | "failed" | "skipped";
+
+export interface DeployScript {
+  id: ID;
+  projectId: ID;
+  name: string;
+  stage: DeployStage;
+  order: number;
+  command: string;
+  args: string[];
+  workingDirectory?: string;
+  env: Record<string, string>;
+  machineId?: ID;
+  continueOnError: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DeployScriptFormInput {
+  projectId: ID;
+  name: string;
+  stage: DeployStage;
+  order?: number;
+  command: string;
+  args: string[];
+  workingDirectory?: string;
+  env: Record<string, string>;
+  machineId?: ID;
+  continueOnError: boolean;
+}
+
+export interface DeployScriptResult {
+  scriptId: ID;
+  status: DeployScriptStatus;
+  exitCode?: number;
+  startedAt?: string;
+  completedAt?: string;
+  error?: string;
+}
+
+export interface DeployRunState {
+  projectId: ID;
+  status: DeployStatus;
+  currentScriptId?: ID;
+  startedAt?: string;
+  completedAt?: string;
+  scriptResults: DeployScriptResult[];
+  lastError?: string;
 }

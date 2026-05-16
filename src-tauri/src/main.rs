@@ -1,3 +1,4 @@
+mod auto_deploy;
 mod commands;
 mod deploy;
 mod health;
@@ -62,7 +63,25 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
-            let config = storage::load_config(app.handle());
+            let mut config = storage::load_config(app.handle());
+            run_startup_step("apply_mediaguard_preset_if_requested", || {
+                if let Ok(dir) = app.handle().path().app_config_dir() {
+                    let sentinel = dir.join(".apply-mediaguard-preset");
+                    if sentinel.exists() {
+                        let base_path = std::fs::read_to_string(&sentinel)
+                            .ok()
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty());
+                        mediaguard_preset::apply(&mut config, base_path);
+                        if let Err(err) = storage::save_config(app.handle(), &config) {
+                            eprintln!("[setup] save after preset apply failed: {}", err.message);
+                        }
+                        if let Err(err) = std::fs::remove_file(&sentinel) {
+                            eprintln!("[setup] remove sentinel failed: {err}");
+                        }
+                    }
+                }
+            });
             let recent_logs =
                 storage::load_recent_logs(app.handle(), process_manager::log_history_since());
             let _ = storage::prune_log_history(app.handle(), process_manager::log_history_since());
@@ -72,6 +91,7 @@ pub fn run() {
             app.manage(state);
             process_manager::start_log_history_pruner(app.handle().clone(), state::app_state());
             process_manager::start_log_batch_flusher(app.handle().clone(), state::app_state());
+            auto_deploy::start_auto_deploy_poller(app.handle().clone(), state::app_state());
             run_startup_step("recover_tracked_processes", || {
                 tauri::async_runtime::block_on(process_manager::recover_tracked_processes(
                     app.handle().clone(),

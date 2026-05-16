@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { api, ApiCallError, unwrap } from "../lib/api";
 import { reportError } from "../lib/errorReporting";
+import { notify } from "../lib/notifications";
 import { deriveProjectStatus } from "../lib/status";
 import type {
   ActivityEvent,
@@ -38,6 +39,14 @@ export interface OrchestratorError {
   code?: string;
   details?: string;
   retryable?: boolean;
+}
+
+interface AutoDeployTriggeredPayload {
+  projectId: ID;
+  projectName: string;
+  branch: string;
+  commitSha: string;
+  commitShaShort: string;
 }
 
 function toOrchestratorError(error: unknown): OrchestratorError {
@@ -283,6 +292,17 @@ export const useOrchestratorStore = create<OrchestratorState>((set, get) => ({
       safeListener<DeployRunState>("deploy_state_changed", (run) => {
         if (!run?.projectId) return;
         set((state) => ({ deployStates: { ...state.deployStates, [run.projectId]: run } }));
+      })
+    );
+    api.on<AutoDeployTriggeredPayload>(
+      "auto_deploy_triggered",
+      safeListener<AutoDeployTriggeredPayload>("auto_deploy_triggered", (payload) => {
+        if (!payload?.projectId) return;
+        if (!get().settings?.notificationsEnabled) return;
+        notify(
+          `Auto-deploying ${payload.projectName}`,
+          `New commit ${payload.commitShaShort} on ${payload.branch}`
+        );
       })
     );
     await get().refreshAll();

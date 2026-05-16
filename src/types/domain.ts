@@ -68,6 +68,8 @@ export interface Project {
   startupOrder: number;
   memoryLimitMb?: number;
   autoRestartOnDeploy: boolean;
+  autoDeploy: boolean;
+  machineId?: ID;
   createdAt: string;
   updatedAt: string;
 }

@@ -42,6 +42,8 @@ const STAGE_HINT: Record<DeployStage, string> = {
   post: "Run after restart (e.g. health checks, notifications)."
 };
 
+const EMPTY_SCRIPTS: DeployScript[] = [];
+
 function emptyDraft(projectId: string, stage: DeployStage): DeployScriptFormInput {
   return {
     projectId,
@@ -66,7 +68,7 @@ function formatScriptCommand(script: DeployScript) {
 
 export function DeploySection({ project }: { project: Project }) {
   const machines = useOrchestratorStore((state) => state.machines);
-  const allScripts = useOrchestratorStore((state) => state.deployScripts[project.id] ?? []);
+  const allScripts = useOrchestratorStore((state) => state.deployScripts[project.id] ?? EMPTY_SCRIPTS);
   const deployState = useOrchestratorStore((state) => state.deployStates[project.id]);
   const createDeployScript = useOrchestratorStore((state) => state.createDeployScript);
   const updateDeployScript = useOrchestratorStore((state) => state.updateDeployScript);
@@ -227,6 +229,22 @@ export function DeploySection({ project }: { project: Project }) {
       </div>
 
       <div className="solo-detail-card">
+        <div className="solo-detail-row">
+          <span className="solo-detail-row-copy">
+            <strong>Auto-deploy on new commits</strong>
+            <small>Polls main (or master) every minute and runs the deploy pipeline when a new commit appears.</small>
+          </span>
+          <span className="solo-detail-actions">
+            <label className={`solo-switch ${project.autoDeploy ? "checked" : ""}`}>
+              <input
+                type="checkbox"
+                checked={project.autoDeploy}
+                onChange={(event) => updateProject({ ...project, autoDeploy: event.target.checked })}
+              />
+              <span />
+            </label>
+          </span>
+        </div>
         <div className="solo-detail-row">
           <span className="solo-detail-row-copy">
             <strong>Auto-restart processes after main steps</strong>

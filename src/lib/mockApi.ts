@@ -84,6 +84,8 @@ const demoProject: Project = {
   startupOrder: 1,
   memoryLimitMb: 2048,
   autoRestartOnDeploy: true,
+  autoDeploy: true,
+  machineId: undefined,
   createdAt: now(),
   updatedAt: now()
 };
@@ -338,6 +340,7 @@ class MockApi {
       startupOrder: input.startupOrder,
       memoryLimitMb: input.memoryLimitMb,
       autoRestartOnDeploy: true,
+      autoDeploy: true,
       createdAt: now(),
       updatedAt: now()
     };

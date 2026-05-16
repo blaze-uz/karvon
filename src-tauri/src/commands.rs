@@ -280,6 +280,8 @@ pub async fn create_project(app: AppHandle, input: ProjectFormInput) -> ApiRespo
         startup_order: input.startup_order,
         memory_limit_mb: input.memory_limit_mb,
         auto_restart_on_deploy: true,
+        auto_deploy: true,
+        machine_id: None,
         created_at: now,
         updated_at: now,
     };

@@ -134,6 +134,29 @@ fn assign_machines_for_preset(config: &mut AppConfig) {
             _ => None,
         }
     };
+
+    let machine_user: HashMap<String, String> = config
+        .machines
+        .iter()
+        .map(|m| (m.id.clone(), m.ssh_user.clone()))
+        .collect();
+
+    for project in &mut config.projects {
+        if let Some(target_id) = deploy_target_for(project.id.as_str()) {
+            project.machine_id = Some(target_id.clone());
+            if let (Some(user), Some(folder)) = (
+                machine_user.get(&target_id),
+                Path::new(&project.root_path)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(str::to_string),
+            ) {
+                if !folder.is_empty() {
+                    project.root_path = format!("/Users/{user}/Herd/{folder}");
+                }
+            }
+        }
+    }
     for process in &mut config.processes {
         if let Some(target) = process_target_for(process.project_id.as_str()) {
             if process.machine_id.is_none() {
@@ -675,6 +698,8 @@ fn project(
         startup_order,
         memory_limit_mb: None,
         auto_restart_on_deploy: true,
+        auto_deploy: true,
+        machine_id: None,
         created_at,
         updated_at: now,
     }

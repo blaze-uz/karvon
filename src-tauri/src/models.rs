@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 pub type Id = String;
-pub const CURRENT_CONFIG_SCHEMA_VERSION: u32 = 3;
+pub const CURRENT_CONFIG_SCHEMA_VERSION: u32 = 4;
 pub const DEFAULT_LOCAL_MACHINE_ID: &str = "machine_local";
 
 pub fn default_ssh_port() -> u16 {
@@ -148,8 +148,20 @@ pub struct Project {
     pub memory_limit_mb: Option<u64>,
     #[serde(default = "default_true")]
     pub auto_restart_on_deploy: bool,
+    #[serde(default = "default_true")]
+    pub auto_deploy: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine_id: Option<Id>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoDeployRecord {
+    pub last_attempted_commit: String,
+    pub branch: String,
+    pub last_attempted_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -477,6 +489,8 @@ pub struct AppConfig {
     pub machines: Vec<Machine>,
     #[serde(default)]
     pub deploy_scripts: Vec<DeployScript>,
+    #[serde(default)]
+    pub auto_deploy_state: HashMap<Id, AutoDeployRecord>,
     pub settings: AppSettings,
     pub last_selected_project_id: Option<Id>,
     pub last_selected_process_id: Option<Id>,
@@ -506,6 +520,7 @@ impl Default for AppConfig {
             processes: vec![],
             machines: vec![Machine::default_local(now)],
             deploy_scripts: vec![],
+            auto_deploy_state: HashMap::new(),
             settings: AppSettings::default(),
             last_selected_project_id: None,
             last_selected_process_id: None,

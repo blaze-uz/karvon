@@ -406,6 +406,18 @@ pub struct LogEntry {
     pub raw: Option<String>,
 }
 
+pub fn default_http_api_enabled() -> bool {
+    true
+}
+
+pub fn default_http_api_port() -> u16 {
+    8765
+}
+
+pub fn default_http_api_bind_host() -> String {
+    "0.0.0.0".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
@@ -416,6 +428,14 @@ pub struct AppSettings {
     pub project_storage_path: Option<String>,
     pub notifications_enabled: bool,
     pub stop_timeout_ms: u64,
+    #[serde(default = "default_http_api_enabled")]
+    pub http_api_enabled: bool,
+    #[serde(default = "default_http_api_port")]
+    pub http_api_port: u16,
+    #[serde(default = "default_http_api_bind_host")]
+    pub http_api_bind_host: String,
+    #[serde(default)]
+    pub http_api_token: Option<String>,
 }
 
 impl Default for AppSettings {
@@ -428,6 +448,10 @@ impl Default for AppSettings {
             project_storage_path: None,
             notifications_enabled: false,
             stop_timeout_ms: 5000,
+            http_api_enabled: default_http_api_enabled(),
+            http_api_port: default_http_api_port(),
+            http_api_bind_host: default_http_api_bind_host(),
+            http_api_token: None,
         }
     }
 }

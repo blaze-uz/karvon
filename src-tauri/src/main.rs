@@ -2,6 +2,7 @@ mod auto_deploy;
 mod commands;
 mod deploy;
 mod health;
+mod http_api;
 mod mediaguard_preset;
 mod models;
 mod process_manager;
@@ -92,6 +93,7 @@ pub fn run() {
             process_manager::start_log_history_pruner(app.handle().clone(), state::app_state());
             process_manager::start_log_batch_flusher(app.handle().clone(), state::app_state());
             auto_deploy::start_auto_deploy_poller(app.handle().clone(), state::app_state());
+            http_api::start_http_server(app.handle().clone(), state::app_state());
             run_startup_step("recover_tracked_processes", || {
                 tauri::async_runtime::block_on(process_manager::recover_tracked_processes(
                     app.handle().clone(),

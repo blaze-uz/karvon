@@ -162,6 +162,15 @@ pub struct AutoDeployRecord {
     pub last_attempted_commit: String,
     pub branch: String,
     pub last_attempted_at: DateTime<Utc>,
+    /// Last commit that was deployed all the way to success. When set and equal
+    /// to the current remote SHA, the poll loop skips the project. When `None`
+    /// (legacy state from before this field existed), the poll loop falls back
+    /// to comparing `last_attempted_commit` for backward compatibility. This
+    /// separation lets failed deploys be retried on the next poll: only the
+    /// "attempted" field updates on detection; the "succeeded" field updates
+    /// only when `execute_pipeline` finishes with `DeployStatus::Success`.
+    #[serde(default)]
+    pub last_succeeded_commit: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

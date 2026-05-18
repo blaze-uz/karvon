@@ -307,6 +307,35 @@ async fn execute_pipeline(
     } else {
         DeployStatus::Success
     };
+
+    // Promote `last_attempted_commit` to `last_succeeded_commit` on a clean run.
+    // This is what gates the auto-deploy poller's retry loop: as long as the
+    // succeeded SHA matches the current remote SHA, the project is considered
+    // in sync and the poll skips it; if a deploy fails (or this code never runs
+    // because the process was killed mid-pipeline, e.g. during the orchestrator's
+    // own self-deploy install step), `last_succeeded_commit` is left stale and
+    // the next poll will trigger again.
+    if matches!(run.status, DeployStatus::Success) {
+        let mut config = state.config.write().await;
+        let mut changed = false;
+        if let Some(record) = config.auto_deploy_state.get_mut(&project.id) {
+            if record.last_succeeded_commit.as_deref()
+                != Some(record.last_attempted_commit.as_str())
+            {
+                record.last_succeeded_commit = Some(record.last_attempted_commit.clone());
+                changed = true;
+            }
+        }
+        if changed {
+            if let Err(err) = storage::save_config(&app, &config) {
+                eprintln!(
+                    "[deploy] save auto_deploy_state on success failed: {}",
+                    err.message
+                );
+            }
+        }
+    }
+
     let status_label = match run.status {
         DeployStatus::Success => "succeeded",
         DeployStatus::Failed => "failed",

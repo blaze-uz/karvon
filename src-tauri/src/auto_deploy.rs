@@ -111,13 +111,26 @@ async fn poll_project(
         config.auto_deploy_state.get(&project.id).cloned()
     };
 
-    match previous {
-        None => {
+    // Decide whether this SHA has already been successfully deployed.
+    // - For new records (`last_succeeded_commit` populated): trust it directly.
+    // - For legacy records from before that field existed: fall back to
+    //   `last_attempted_commit` to preserve existing behaviour.
+    let already_synced = previous.as_ref().map(|record| match &record.last_succeeded_commit {
+        Some(succeeded) => succeeded == &remote_sha,
+        None => record.last_attempted_commit == remote_sha,
+    });
+
+    match (previous, already_synced) {
+        (None, _) => {
             seed_record(&app, &state, &project.id, &branch, &remote_sha).await;
         }
-        Some(record) if record.last_attempted_commit == remote_sha => {}
-        Some(_) => {
-            record_and_save(&app, &state, &project.id, &branch, &remote_sha).await;
+        (Some(_), Some(true)) => {}
+        (Some(_), _) => {
+            // Record the attempt before triggering — the SHA, branch and timestamp
+            // are useful for the UI even if the deploy never finishes. The success
+            // tracking is updated separately by `execute_pipeline` so a failed
+            // deploy will be retried on the next poll.
+            record_attempt(&app, &state, &project.id, &branch, &remote_sha).await;
             let commit_short: String = remote_sha.chars().take(7).collect();
             let _ = app.emit(
                 "auto_deploy_triggered",
@@ -141,6 +154,10 @@ async fn poll_project(
     }
 }
 
+/// First-time observation of a project: presume the working tree is already at
+/// the remote SHA (we don't want to trigger a deploy on first sight just because
+/// we have no history). Record both "attempted" and "succeeded" as the current
+/// remote SHA so subsequent polls treat this as a no-op until the remote moves.
 async fn seed_record(
     app: &AppHandle,
     state: &AppState,
@@ -155,6 +172,7 @@ async fn seed_record(
             last_attempted_commit: sha.to_string(),
             branch: branch.to_string(),
             last_attempted_at: Utc::now(),
+            last_succeeded_commit: Some(sha.to_string()),
         },
     );
     if let Err(err) = storage::save_config(app, &config) {
@@ -162,7 +180,12 @@ async fn seed_record(
     }
 }
 
-async fn record_and_save(
+/// Update only the "attempted" half of the record. `last_succeeded_commit` is
+/// intentionally left alone — it is updated separately by `execute_pipeline`
+/// after a successful deploy. This is what enables retry-on-failure: if a
+/// deploy fails (or the orchestrator restarts mid-deploy), the next poll will
+/// still see `last_succeeded_commit != remote_sha` and trigger again.
+async fn record_attempt(
     app: &AppHandle,
     state: &AppState,
     project_id: &Id,
@@ -170,12 +193,17 @@ async fn record_and_save(
     sha: &str,
 ) {
     let mut config = state.config.write().await;
+    let existing_succeeded = config
+        .auto_deploy_state
+        .get(project_id)
+        .and_then(|record| record.last_succeeded_commit.clone());
     config.auto_deploy_state.insert(
         project_id.clone(),
         AutoDeployRecord {
             last_attempted_commit: sha.to_string(),
             branch: branch.to_string(),
             last_attempted_at: Utc::now(),
+            last_succeeded_commit: existing_succeeded,
         },
     );
     if let Err(err) = storage::save_config(app, &config) {

@@ -752,6 +752,7 @@ class MockApi {
     if (!scripts.length) return Promise.resolve(this.error("DEPLOY_NO_SCRIPTS", "No deploy scripts configured"));
 
     const run: DeployRunState = {
+      runId: `dep_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       projectId,
       status: "running",
       startedAt: now(),
@@ -819,7 +820,7 @@ class MockApi {
 
   cancelDeploy(projectId: ID): Promise<ApiResponse<DeployRunState>> {
     const state = this.deployStates.get(projectId);
-    if (!state) return Promise.resolve(this.ok({ projectId, status: "idle", scriptResults: [] }));
+    if (!state) return Promise.resolve(this.ok({ runId: "", projectId, status: "idle", scriptResults: [] }));
     if (state.status === "running") {
       const cancelled: DeployRunState = {
         ...state,

@@ -17,11 +17,12 @@ const PROJECT_INSTAGRAM: &str = "project_media_guard_instagram";
 const PROJECT_YOUTUBE: &str = "project_media_guard_youtube";
 const PROJECT_FACEBOOK: &str = "project_media_guard_facebook";
 const PROJECT_ANALYZER: &str = "project_media_guard_analizer";
+const PROJECT_AGENT_PY: &str = "project_media_guard_agent";
 const PROJECT_ORCHESTRATOR: &str = "project_app_orchestrator";
 
 const OLD_WEB_PROJECT_ID: &str = "project_5d59221441524aadab582d075159b90d";
 
-const PROJECT_FOLDERS: [&str; 8] = [
+const PROJECT_FOLDERS: [&str; 9] = [
     "media-guard-web",
     "media-guard-collector-agent",
     "media-guard-telegram",
@@ -29,6 +30,7 @@ const PROJECT_FOLDERS: [&str; 8] = [
     "media-guard-youtube",
     "media-guard-facebook",
     "media-guard-analizer",
+    "media-guard-agent",
     "app-orchestrator",
 ];
 
@@ -106,6 +108,7 @@ fn desired_project_ids() -> HashSet<&'static str> {
         PROJECT_YOUTUBE,
         PROJECT_FACEBOOK,
         PROJECT_ANALYZER,
+        PROJECT_AGENT_PY,
         PROJECT_ORCHESTRATOR,
     ]
     .into_iter()
@@ -123,6 +126,7 @@ fn assign_machines_for_preset(config: &mut AppConfig) {
         match project_id {
             PROJECT_YOUTUBE => mars_id.clone(),
             PROJECT_TELEGRAM | PROJECT_FACEBOOK | PROJECT_INSTAGRAM => luna_id.clone(),
+            PROJECT_AGENT_PY => zen_id.clone(),
             _ => None,
         }
     };
@@ -130,7 +134,7 @@ fn assign_machines_for_preset(config: &mut AppConfig) {
         match project_id {
             PROJECT_YOUTUBE => mars_id.clone(),
             PROJECT_TELEGRAM | PROJECT_FACEBOOK | PROJECT_INSTAGRAM => luna_id.clone(),
-            PROJECT_ORCHESTRATOR => zen_id.clone(),
+            PROJECT_AGENT_PY | PROJECT_ORCHESTRATOR => zen_id.clone(),
             _ => None,
         }
     };
@@ -296,6 +300,20 @@ fn desired_projects(base_path: &str, old_projects: &[Project], now: DateTime<Utc
             vec!["python", "ai", "analizer"],
             70,
             true,
+            old_projects,
+            now,
+        ),
+        project(
+            PROJECT_AGENT_PY,
+            "MediaGuard Agent",
+            "media-guard-agent",
+            "Python FastAPI + Qwen-Agent sidecar — hosts the /app/agent LLM loop and calls back into MediaGuard MCP. Deploys to Zen; launchd supervises uvicorn.",
+            base_path,
+            "media-guard-agent",
+            "#f97316",
+            vec!["python", "ai", "agent", "fastapi"],
+            75,
+            false,
             old_projects,
             now,
         ),
@@ -580,6 +598,32 @@ fn desired_processes(
             old_processes,
             now,
         ),
+        // Single FastAPI service for media-guard-agent. auto_start:false because
+        // the Zen launchd plist uz.blaze.mediaguard-agent already supervises this
+        // — orchestrator registers it for visibility (status, logs) and to drive
+        // the deploy pipeline below.
+        process(
+            "process_media_guard_agent_service",
+            PROJECT_AGENT_PY,
+            "Agent service (uvicorn)",
+            "agent-service",
+            "./.venv/bin/python",
+            vec![
+                "-m", "uvicorn", "media_guard_agent.main:app",
+                "--host", "127.0.0.1",
+                "--port", "8092",
+                "--log-level", "info",
+            ],
+            env_map(vec![("PYTHONUNBUFFERED", "1")]),
+            false,
+            Some(http_health("http://127.0.0.1:8092/healthz", 2000)),
+            "ai-agent",
+            vec![],
+            None,
+            old_projects,
+            old_processes,
+            now,
+        ),
     ]
 }
 
@@ -632,6 +676,11 @@ fn desired_deploy_scripts(
     // MediaGuard Analizer (Python pyproject)
     scripts.push(deploy_script("deploy_mg_analizer_pull", PROJECT_ANALYZER, "Git pull", DeployStage::Main, 0, "git", vec!["pull", "--ff-only"], false, old_scripts, now));
     scripts.push(deploy_script("deploy_mg_analizer_pip", PROJECT_ANALYZER, "Pip install (editable)", DeployStage::Main, 1, "./.venv/bin/pip", vec!["install", "-e", "."], false, old_scripts, now));
+
+    // MediaGuard Agent (Python FastAPI sidecar — Zen, uv-managed venv, launchd-supervised)
+    scripts.push(deploy_script("deploy_mg_agent_pull", PROJECT_AGENT_PY, "Git pull", DeployStage::Main, 0, "git", vec!["pull", "--ff-only"], false, old_scripts, now));
+    scripts.push(deploy_script("deploy_mg_agent_uv_sync", PROJECT_AGENT_PY, "uv sync", DeployStage::Main, 1, "/opt/homebrew/bin/uv", vec!["sync"], false, old_scripts, now));
+    scripts.push(deploy_script("deploy_mg_agent_kickstart", PROJECT_AGENT_PY, "launchctl kickstart agent", DeployStage::Main, 2, "launchctl", vec!["kickstart", "-k", "gui/501/uz.blaze.mediaguard-agent"], false, old_scripts, now));
 
     // App Orchestrator (this Tauri app) — deployed to Zen
     scripts.push(deploy_script("deploy_orchestrator_pull", PROJECT_ORCHESTRATOR, "Git pull", DeployStage::Main, 0, "git", vec!["pull", "--ff-only"], false, old_scripts, now));
@@ -811,6 +860,7 @@ fn is_project_folder_for_desired(root_path: &str, desired_project_id: &str) -> b
             | (PROJECT_YOUTUBE, "media-guard-youtube")
             | (PROJECT_FACEBOOK, "media-guard-facebook")
             | (PROJECT_ANALYZER, "media-guard-analizer")
+            | (PROJECT_AGENT_PY, "media-guard-agent")
     )
 }
 

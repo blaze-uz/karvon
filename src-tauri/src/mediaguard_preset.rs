@@ -598,6 +598,28 @@ fn desired_processes(
             old_processes,
             now,
         ),
+        // G1 — F2.2 centroid taxonomy worker. Same registration shape as the
+        // legacy taxonomy worker above so a kill restarts it via the same
+        // restart policy. Operator-flipped gate `AI_TAXONOMY_CENTROID_ENABLED`
+        // turns the loop into a no-op without taking the process down (mirror
+        // of `AI_TAXONOMY_LEGACY_ENABLED` from F2.1).
+        process(
+            "process_media_guard_analizer_taxonomy_centroid_worker",
+            PROJECT_ANALYZER,
+            "Taxonomy centroid worker",
+            "taxonomy-centroid-worker",
+            "./.venv/bin/python",
+            vec!["-m", "app.main_taxonomy_centroid"],
+            env_map(vec![("PYTHONUNBUFFERED", "1")]),
+            true,
+            None,
+            "ai-workers",
+            vec![],
+            None,
+            old_projects,
+            old_processes,
+            now,
+        ),
         // Single FastAPI service for media-guard-agent. auto_start:false because
         // the Zen launchd plist uz.blaze.mediaguard-agent already supervises this
         // — orchestrator registers it for visibility (status, logs) and to drive

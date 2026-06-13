@@ -173,6 +173,7 @@ async fn seed_record(
             branch: branch.to_string(),
             last_attempted_at: Utc::now(),
             last_succeeded_commit: Some(sha.to_string()),
+            last_failure_notified_commit: None,
         },
     );
     if let Err(err) = storage::save_config(app, &config) {
@@ -197,6 +198,10 @@ async fn record_attempt(
         .auto_deploy_state
         .get(project_id)
         .and_then(|record| record.last_succeeded_commit.clone());
+    let existing_notified = config
+        .auto_deploy_state
+        .get(project_id)
+        .and_then(|record| record.last_failure_notified_commit.clone());
     config.auto_deploy_state.insert(
         project_id.clone(),
         AutoDeployRecord {
@@ -204,6 +209,7 @@ async fn record_attempt(
             branch: branch.to_string(),
             last_attempted_at: Utc::now(),
             last_succeeded_commit: existing_succeeded,
+            last_failure_notified_commit: existing_notified,
         },
     );
     if let Err(err) = storage::save_config(app, &config) {

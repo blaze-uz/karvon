@@ -171,6 +171,12 @@ pub struct AutoDeployRecord {
     /// only when `execute_pipeline` finishes with `DeployStatus::Success`.
     #[serde(default)]
     pub last_succeeded_commit: Option<String>,
+    /// Last commit for which a deploy-failure alert was already sent. Debounces
+    /// the auto-deploy poller's 60s retry loop: a deploy stuck failing on the
+    /// same commit alerts once, not every poll. Reset implicitly when the
+    /// attempted commit changes (a new commit failing alerts again).
+    #[serde(default)]
+    pub last_failure_notified_commit: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -445,6 +451,13 @@ pub struct AppSettings {
     pub http_api_bind_host: String,
     #[serde(default)]
     pub http_api_token: Option<String>,
+    /// Optional outbound webhook URL hit when an auto/manual deploy ends in
+    /// failure. The orchestrator POSTs (via `curl`, form field `text`) a
+    /// human-readable failure summary. The URL carries the channel + any
+    /// credentials (e.g. a Telegram `…/sendMessage?chat_id=<id>` with the bot
+    /// token in the path), so no secrets live in code. Empty/None = disabled.
+    #[serde(default)]
+    pub deploy_failure_webhook: Option<String>,
 }
 
 impl Default for AppSettings {
@@ -461,6 +474,7 @@ impl Default for AppSettings {
             http_api_port: default_http_api_port(),
             http_api_bind_host: default_http_api_bind_host(),
             http_api_token: None,
+            deploy_failure_webhook: None,
         }
     }
 }

@@ -856,6 +856,14 @@ async fn finalize_deploy_history(app: &AppHandle, state: &AppState, run: &Deploy
         trigger: None,
         logs,
     };
+    if matches!(entry.status, DeployStatus::Failed) {
+        let app = app.clone();
+        let state = state.clone();
+        let entry = entry.clone();
+        tauri::async_runtime::spawn(async move {
+            notify_deploy_failure(&app, &state, &entry).await;
+        });
+    }
     let _guard = state.runtime.deploy_history_io.lock().await;
     if let Err(err) = storage::append_deploy_history(app, &entry) {
         eprintln!("[deploy] append deploy history failed: {}", err.message);
@@ -918,6 +926,98 @@ async fn run_auto_restart(app: &AppHandle, state: &AppState, project: &Project) 
     }
     if let Err(err) = app.emit("process_log", entry) {
         eprintln!("[deploy] emit process_log failed: {err}");
+    }
+}
+
+/// POST a human-readable failure summary to the configured webhook (if any)
+/// when a deploy ends in `DeployStatus::Failed`. Shells out to `curl` so no
+/// HTTP-client dependency is needed; the webhook URL carries the channel +
+/// credentials (e.g. a Telegram `…/sendMessage?chat_id=<id>`), so no secrets
+/// live in code. Debounced per failing commit via
+/// `AutoDeployRecord::last_failure_notified_commit` so the 60s auto-deploy
+/// retry loop alerts once per commit instead of every poll.
+async fn notify_deploy_failure(app: &AppHandle, state: &AppState, entry: &DeployHistoryEntry) {
+    let (url, message) = {
+        let mut config = state.config.write().await;
+        let url = match config.settings.deploy_failure_webhook.clone() {
+            Some(u) if !u.trim().is_empty() => u.trim().to_string(),
+            _ => return,
+        };
+        let attempted = config
+            .auto_deploy_state
+            .get(&entry.project_id)
+            .map(|r| r.last_attempted_commit.clone());
+        // Debounce: skip if we already alerted for this exact commit.
+        if let Some(record) = config.auto_deploy_state.get(&entry.project_id) {
+            if attempted.is_some()
+                && record.last_failure_notified_commit.as_deref() == attempted.as_deref()
+            {
+                return;
+            }
+        }
+        if let Some(record) = config.auto_deploy_state.get_mut(&entry.project_id) {
+            record.last_failure_notified_commit = attempted.clone();
+            if let Err(err) = storage::save_config(app, &config) {
+                eprintln!("[deploy] save notify-debounce state failed: {}", err.message);
+            }
+        }
+        let project_name = config
+            .projects
+            .iter()
+            .find(|p| p.id == entry.project_id)
+            .map(|p| p.name.clone())
+            .unwrap_or_else(|| entry.project_id.clone());
+        let (branch, commit) = config
+            .auto_deploy_state
+            .get(&entry.project_id)
+            .map(|r| {
+                (
+                    r.branch.clone(),
+                    r.last_attempted_commit.chars().take(7).collect::<String>(),
+                )
+            })
+            .unwrap_or_else(|| (String::new(), String::new()));
+        let failed_step = entry
+            .script_results
+            .iter()
+            .find(|s| matches!(s.status, DeployScriptStatus::Failed))
+            .map(|s| s.script_id.clone())
+            .unwrap_or_else(|| "?".to_string());
+        let error = entry
+            .last_error
+            .clone()
+            .unwrap_or_else(|| "(no error message)".to_string());
+        let tail: Vec<String> = entry
+            .logs
+            .iter()
+            .rev()
+            .take(20)
+            .rev()
+            .map(|l| l.message.clone())
+            .collect();
+        let message = format!(
+            "🚨 DEPLOY FAILED — {project_name}\nbranch {branch} @ {commit}\nstep: {failed_step}\nerror: {error}\n\n--- log tail ---\n{}",
+            tail.join("\n")
+        );
+        (url, message)
+    };
+
+    let mut cmd = Command::new("/usr/bin/curl");
+    cmd.arg("-s")
+        .arg("--max-time")
+        .arg("10")
+        .arg("-X")
+        .arg("POST")
+        .arg("--data-urlencode")
+        .arg(format!("text={message}"))
+        .arg(&url)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    match cmd.status().await {
+        Ok(status) if status.success() => {}
+        Ok(status) => eprintln!("[deploy] failure-notify curl exited {:?}", status.code()),
+        Err(err) => eprintln!("[deploy] failure-notify curl spawn failed: {err}"),
     }
 }
 

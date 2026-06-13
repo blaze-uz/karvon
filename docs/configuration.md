@@ -1,9 +1,9 @@
 # Configuration reference
 
-App Orchestrator stores all state as JSON in:
+Karvon stores all state as JSON in:
 
 ```
-~/Library/Application Support/uz.blaze.app-orchestrator/config.json
+~/Library/Application Support/uz.blaze.karvon/config.json
 ```
 
 You normally edit it through the UI. This page documents the schema so you can

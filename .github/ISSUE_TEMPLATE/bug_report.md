@@ -21,7 +21,7 @@ labels: bug
 
 ## Environment
 
-- App Orchestrator version:
+- Karvon version:
 - macOS version:
 - Installed via: dmg / built from source / other:
 

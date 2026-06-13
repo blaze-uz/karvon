@@ -161,7 +161,7 @@ pub fn run() {
             commands::get_deploy_history_entry
         ])
         .build(tauri::generate_context!())
-        .expect("error while building App Orchestrator");
+        .expect("error while building Karvon");
 
     let shutdown_started = shutdown_started.clone();
     app.run(move |_app_handle, event| match event {

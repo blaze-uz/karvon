@@ -120,7 +120,7 @@ export function SidebarProjects() {
       <div className="app-brand">
         <img src="/app-logo.png" alt="" aria-hidden="true" />
         <div>
-          <strong>App Orchestrator</strong>
+          <strong>Karvon</strong>
           <span>Process control</span>
         </div>
       </div>
@@ -136,7 +136,7 @@ export function SidebarProjects() {
         <span className="solo-mark" style={{ backgroundColor: selectedProject?.color || undefined }}>
           {projectMark(selectedProject)}
         </span>
-        <strong>{selectedProject?.name ?? "App Orchestrator"}</strong>
+        <strong>{selectedProject?.name ?? "Karvon"}</strong>
         {selectedProject ? <ProjectStatusBadges processes={selectedProcesses} runtimeStates={runtimeStates} /> : null}
         <small>{runningMeta(selectedProject, selectedProcesses, runtimeStates)}</small>
       </button>

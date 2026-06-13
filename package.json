@@ -1,15 +1,15 @@
 {
-  "name": "app-orchestrator",
+  "name": "karvon",
   "private": true,
   "version": "0.1.0",
   "description": "macOS desktop control panel for orchestrating local + remote dev processes, deploy pipelines, and SSH-driven multi-machine workflows.",
-  "homepage": "https://github.com/blaze-uz/app-orchestrator#readme",
+  "homepage": "https://github.com/blaze-uz/karvon#readme",
   "bugs": {
-    "url": "https://github.com/blaze-uz/app-orchestrator/issues"
+    "url": "https://github.com/blaze-uz/karvon/issues"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/blaze-uz/app-orchestrator.git"
+    "url": "https://github.com/blaze-uz/karvon.git"
   },
   "license": "MIT",
   "keywords": [

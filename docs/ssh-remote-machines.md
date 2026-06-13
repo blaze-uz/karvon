@@ -1,6 +1,6 @@
 # Remote machines & SSH
 
-App Orchestrator can drive processes and deploys on remote Macs over SSH. This
+Karvon can drive processes and deploys on remote Macs over SSH. This
 page covers what's required and how it works in practice.
 
 ## Prerequisites

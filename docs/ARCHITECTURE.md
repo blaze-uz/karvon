@@ -1,6 +1,6 @@
-# App Orchestrator Architecture
+# Karvon Architecture
 
-App Orchestrator is split into a React presentation layer and a Tauri-native orchestration layer.
+Karvon is split into a React presentation layer and a Tauri-native orchestration layer.
 
 ## Frontend
 

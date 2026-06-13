@@ -96,7 +96,7 @@ export function SettingsView() {
       if (api.isTauri) {
         const path = await save({
           title: "Export configuration",
-          defaultPath: "app-orchestrator.config.json",
+          defaultPath: "karvon.config.json",
           filters: [{ name: "JSON", extensions: ["json"] }]
         });
         if (!path) return;
@@ -108,7 +108,7 @@ export function SettingsView() {
         const url = URL.createObjectURL(blob);
         const link = document.createElement("a");
         link.href = url;
-        link.download = "app-orchestrator.config.json";
+        link.download = "karvon.config.json";
         link.click();
         URL.revokeObjectURL(url);
       }

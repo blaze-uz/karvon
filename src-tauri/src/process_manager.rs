@@ -3704,24 +3704,24 @@ mod tests {
     #[test]
     fn cwd_match_accepts_exact_directory() {
         assert!(cwd_matches_root(
-            "/tmp/app-orchestrator/project",
-            "/tmp/app-orchestrator/project"
+            "/tmp/karvon/project",
+            "/tmp/karvon/project"
         ));
     }
 
     #[test]
     fn cwd_match_accepts_child_directory() {
         assert!(cwd_matches_root(
-            "/tmp/app-orchestrator/project/packages/api",
-            "/tmp/app-orchestrator/project"
+            "/tmp/karvon/project/packages/api",
+            "/tmp/karvon/project"
         ));
     }
 
     #[test]
     fn cwd_match_rejects_sibling_directory() {
         assert!(!cwd_matches_root(
-            "/tmp/app-orchestrator/project-api",
-            "/tmp/app-orchestrator/project"
+            "/tmp/karvon/project-api",
+            "/tmp/karvon/project"
         ));
     }
 

@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 
-const appName = "App Orchestrator.app";
+const appName = "Karvon.app";
 const installedAppPath = join("/Applications", appName);
 const builtAppPath = join(process.cwd(), "src-tauri", "target", "release", "bundle", "macos", appName);
 const appPath = existsSync(installedAppPath) ? installedAppPath : builtAppPath;

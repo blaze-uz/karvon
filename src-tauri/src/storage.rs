@@ -601,9 +601,35 @@ fn migrate_legacy_app_config_if_needed(path: &Path) -> Result<(), ApiError> {
     let Some(config_parent) = current_dir.parent() else {
         return Ok(());
     };
-    let legacy_dir = config_parent.join("dev.local-project-orchestrator.app");
-    let legacy_config_path = legacy_dir.join("config.json");
-    if !legacy_config_path.exists() || !should_use_legacy_config(path, &legacy_config_path) {
+
+    // Identifiers Karvon has shipped under, newest first. The first one whose
+    // config.json has real content (and isn't worse than what we already have)
+    // wins. Order matters when several legacy dirs exist on the same machine.
+    const LEGACY_DIR_NAMES: &[&str] = &[
+        "uz.blaze.app-orchestrator",
+        "dev.local-project-orchestrator.app",
+    ];
+
+    let mut best: Option<(PathBuf, usize)> = None;
+    for name in LEGACY_DIR_NAMES {
+        let legacy_dir = config_parent.join(name);
+        let legacy_config_path = legacy_dir.join("config.json");
+        if !legacy_config_path.exists() {
+            continue;
+        }
+        let score = config_content_score(&legacy_config_path);
+        if score == 0 {
+            continue;
+        }
+        if best.as_ref().map(|(_, s)| score > *s).unwrap_or(true) {
+            best = Some((legacy_config_path, score));
+        }
+    }
+
+    let Some((legacy_config_path, _)) = best else {
+        return Ok(());
+    };
+    if !should_use_legacy_config(path, &legacy_config_path) {
         return Ok(());
     }
 
@@ -628,9 +654,11 @@ fn migrate_legacy_app_config_if_needed(path: &Path) -> Result<(), ApiError> {
         )
     })?;
 
-    let legacy_runtime_path = legacy_dir.join("runtime-pids.json");
-    if legacy_runtime_path.exists() {
-        let _ = fs::copy(legacy_runtime_path, current_dir.join("runtime-pids.json"));
+    if let Some(legacy_dir) = legacy_config_path.parent() {
+        let legacy_runtime_path = legacy_dir.join("runtime-pids.json");
+        if legacy_runtime_path.exists() {
+            let _ = fs::copy(legacy_runtime_path, current_dir.join("runtime-pids.json"));
+        }
     }
     Ok(())
 }

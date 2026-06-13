@@ -83,13 +83,13 @@ Right — the MediaGuard preset was removed in the public release. Your existing
 config (projects, processes, deploy scripts) is preserved in
 `config.json`, so day-to-day work continues. For one-click preset support of
 your own project bundles, watch the
-[generic preset framework](https://github.com/blaze-uz/app-orchestrator/issues)
+[generic preset framework](https://github.com/blaze-uz/karvon/issues)
 roadmap item or contribute one.
 
 ## Where's the config file?
 
 ```
-~/Library/Application Support/uz.blaze.app-orchestrator/config.json
+~/Library/Application Support/uz.blaze.karvon/config.json
 ```
 
 Backups land in the same directory with timestamps. Deploy history is
@@ -100,8 +100,8 @@ Backups land in the same directory with timestamps. Deploy history is
 Quit the app, then:
 
 ```bash
-mv "$HOME/Library/Application Support/uz.blaze.app-orchestrator/config.json" \
-   "$HOME/Library/Application Support/uz.blaze.app-orchestrator/config.json.before-reset"
+mv "$HOME/Library/Application Support/uz.blaze.karvon/config.json" \
+   "$HOME/Library/Application Support/uz.blaze.karvon/config.json.before-reset"
 ```
 
 Reopen the app and it'll write a fresh default config. The old file is right
@@ -109,10 +109,10 @@ next to it if you want to inspect or partially restore.
 
 ## I want to file a bug
 
-Open an [issue](https://github.com/blaze-uz/app-orchestrator/issues/new/choose).
+Open an [issue](https://github.com/blaze-uz/karvon/issues/new/choose).
 Include:
 
-- App Orchestrator version (Settings → About).
+- Karvon version (Settings → About).
 - macOS version.
 - The relevant entry from the deploy history (Settings → Activity for a
   recent timestamped event ID) or a redacted log snippet.

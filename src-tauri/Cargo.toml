@@ -1,8 +1,8 @@
 [package]
-name = "app-orchestrator"
+name = "karvon"
 version = "0.1.0"
 description = "macOS local project orchestration panel"
-authors = ["App Orchestrator"]
+authors = ["Karvon"]
 edition = "2021"
 
 [build-dependencies]

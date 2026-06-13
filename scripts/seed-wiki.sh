@@ -11,7 +11,7 @@
 
 set -euo pipefail
 
-REPO="${REPO:-$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || echo "blaze-uz/app-orchestrator")}"
+REPO="${REPO:-$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || echo "blaze-uz/karvon")}"
 WIKI_URL="https://github.com/${REPO}.wiki.git"
 TMPDIR="$(mktemp -d -t app-orch-wiki-XXXXXX)"
 
@@ -52,10 +52,10 @@ cat > "$TMPDIR/_Sidebar.md" <<'EOF'
 EOF
 
 cat > "$TMPDIR/_Footer.md" <<'EOF'
-[Repo](https://github.com/blaze-uz/app-orchestrator) ·
-[Releases](https://github.com/blaze-uz/app-orchestrator/releases) ·
-[Issues](https://github.com/blaze-uz/app-orchestrator/issues) ·
-[Security policy](https://github.com/blaze-uz/app-orchestrator/blob/main/SECURITY.md)
+[Repo](https://github.com/blaze-uz/karvon) ·
+[Releases](https://github.com/blaze-uz/karvon/releases) ·
+[Issues](https://github.com/blaze-uz/karvon/issues) ·
+[Security policy](https://github.com/blaze-uz/karvon/blob/main/SECURITY.md)
 EOF
 
 cd "$TMPDIR"

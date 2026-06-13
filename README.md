@@ -1,19 +1,19 @@
 <div align="center">
 
-# App Orchestrator
+# Karvon
 
 **The macOS panel for every dev process — local and remote.**
 
 Stop juggling 12 terminal tabs. Manage your APIs, queues, schedulers, collectors,
 and deploy pipelines from one window. Treat remote Macs as if they were local.
 
-[![CI](https://github.com/blaze-uz/app-orchestrator/actions/workflows/ci.yml/badge.svg)](https://github.com/blaze-uz/app-orchestrator/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/blaze-uz/app-orchestrator?include_prereleases&sort=semver)](https://github.com/blaze-uz/app-orchestrator/releases)
+[![CI](https://github.com/blaze-uz/karvon/actions/workflows/ci.yml/badge.svg)](https://github.com/blaze-uz/karvon/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/blaze-uz/karvon?include_prereleases&sort=semver)](https://github.com/blaze-uz/karvon/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-macOS-lightgrey)](https://github.com/blaze-uz/app-orchestrator/releases)
+[![Platform](https://img.shields.io/badge/platform-macOS-lightgrey)](https://github.com/blaze-uz/karvon/releases)
 [![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%20v2-24C8DB)](https://tauri.app)
 
-[Download](https://github.com/blaze-uz/app-orchestrator/releases) ·
+[Download](https://github.com/blaze-uz/karvon/releases) ·
 [Documentation](docs/) ·
 [Contributing](CONTRIBUTING.md) ·
 [Security](SECURITY.md)
@@ -22,7 +22,7 @@ and deploy pipelines from one window. Treat remote Macs as if they were local.
 
 ---
 
-## Why App Orchestrator?
+## Why Karvon?
 
 Most non-trivial backends are *several* processes — a web server, a queue worker,
 a scheduler, a few language-specific workers, and often a collector or two. In
@@ -30,7 +30,7 @@ development you end up with iTerm split-pane gymnastics or a brittle tmuxinator
 config. In production you're SSHing into one server at a time, running deploy
 scripts by hand, hoping you remembered them all.
 
-App Orchestrator gives you **one panel** that:
+Karvon gives you **one panel** that:
 
 - Starts, stops, restarts every process by project
 - Streams stdout/stderr with virtualized rendering — millions of log lines stay snappy
@@ -59,18 +59,18 @@ no Electron memory footprint.
 
 ```bash
 # macOS (Apple Silicon or Intel)
-curl -L https://github.com/blaze-uz/app-orchestrator/releases/latest/download/App.Orchestrator_aarch64.dmg -o app-orchestrator.dmg
-open app-orchestrator.dmg   # drag to /Applications
+curl -L https://github.com/blaze-uz/karvon/releases/latest/download/Karvon_aarch64.dmg -o karvon.dmg
+open karvon.dmg   # drag to /Applications
 ```
 
-Or grab the `.dmg` from the [Releases page](https://github.com/blaze-uz/app-orchestrator/releases)
+Or grab the `.dmg` from the [Releases page](https://github.com/blaze-uz/karvon/releases)
 and drag it into `/Applications`. The bundled updater handles future versions.
 
 ### Build from source
 
 ```bash
-git clone https://github.com/blaze-uz/app-orchestrator.git
-cd app-orchestrator
+git clone https://github.com/blaze-uz/karvon.git
+cd karvon
 npm install
 npm run desktop:install
 ```
@@ -95,7 +95,7 @@ Everything is JSON-serializable, importable, and exportable.
 
 ## How it compares
 
-|                            | App Orchestrator | PM2          | Foreman      | mprocs       | Overmind     |
+|                            | Karvon | PM2          | Foreman      | mprocs       | Overmind     |
 |----------------------------|------------------|--------------|--------------|--------------|--------------|
 | **GUI**                    | macOS native     | CLI only     | CLI only     | TUI          | CLI only     |
 | **Multi-machine SSH**      | ✅               | ❌           | ❌           | ❌           | ❌           |
@@ -106,7 +106,7 @@ Everything is JSON-serializable, importable, and exportable.
 | **HTTP API**               | ✅ (opt-in)      | ✅ (PM2 Plus)| ❌           | ❌           | ❌           |
 | **Tech stack**             | Tauri/Rust       | Node         | Ruby         | Rust         | Go           |
 
-> If you live in PM2 or tmuxinator and you're happy, stay there. App Orchestrator
+> If you live in PM2 or tmuxinator and you're happy, stay there. Karvon
 > is for the case where you want a single screen across many projects and one or
 > more remote build/deploy hosts.
 
@@ -167,13 +167,13 @@ curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8765/api/v1/dashboard
 - [ ] Plugin/extension surface for custom health checks and deploy steps
 - [ ] Web UI mode for headless servers
 
-Suggestions welcome — open an [issue](https://github.com/blaze-uz/app-orchestrator/issues/new/choose).
+Suggestions welcome — open an [issue](https://github.com/blaze-uz/karvon/issues/new/choose).
 
 ---
 
 ## Security
 
-App Orchestrator runs arbitrary local and SSH commands by design. Treat the
+Karvon runs arbitrary local and SSH commands by design. Treat the
 HTTP API token like an SSH key. See [SECURITY.md](SECURITY.md) for the threat
 model and disclosure process.
 

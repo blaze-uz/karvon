@@ -3,9 +3,12 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 
-const preferredLocalKeyPath = join(homedir(), ".tauri", "app-orchestrator.key");
-const legacyLocalKeyPath = join(homedir(), ".tauri", "local-project-orchestrator.key");
-const localKeyPath = existsSync(preferredLocalKeyPath) ? preferredLocalKeyPath : legacyLocalKeyPath;
+const candidateKeyPaths = [
+  join(homedir(), ".tauri", "karvon.key"),
+  join(homedir(), ".tauri", "app-orchestrator.key"),
+  join(homedir(), ".tauri", "local-project-orchestrator.key"),
+];
+const localKeyPath = candidateKeyPaths.find((p) => existsSync(p)) ?? candidateKeyPaths[0];
 const env = { ...process.env };
 
 if (!env.TAURI_SIGNING_PRIVATE_KEY && existsSync(localKeyPath)) {

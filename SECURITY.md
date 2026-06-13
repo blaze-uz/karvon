@@ -3,7 +3,7 @@
 ## Reporting a vulnerability
 
 Please report security issues privately by opening a
-[GitHub Security Advisory](https://github.com/blaze-uz/app-orchestrator/security/advisories/new)
+[GitHub Security Advisory](https://github.com/blaze-uz/karvon/security/advisories/new)
 on the repository. Do not file public issues for security bugs.
 
 We will acknowledge receipt within 7 days and aim to ship a fix or mitigation
@@ -11,7 +11,7 @@ within 30 days for high-severity issues.
 
 ## Threat model
 
-App Orchestrator is a single-user desktop app. It manages local OS processes
+Karvon is a single-user desktop app. It manages local OS processes
 and, optionally, remote processes over SSH. The trust boundary is the local
 user account: anything that can read the user's app-config directory or
 connect to the local HTTP API can execute arbitrary commands as the user.

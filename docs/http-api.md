@@ -1,6 +1,6 @@
 # HTTP API
 
-App Orchestrator ships an optional HTTP API for scripting, automation, and
+Karvon ships an optional HTTP API for scripting, automation, and
 integration with monitoring tools.
 
 > ⚠️ Read [SECURITY.md](../SECURITY.md) before exposing the API. Every protected

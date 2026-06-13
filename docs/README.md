@@ -1,6 +1,6 @@
-# App Orchestrator documentation
+# Karvon documentation
 
-Welcome. App Orchestrator is a macOS desktop control panel for orchestrating
+Welcome. Karvon is a macOS desktop control panel for orchestrating
 local and remote development processes. This directory holds the canonical
 documentation.
 
@@ -18,10 +18,10 @@ documentation.
 
 ## External pages
 
-- [README](../README.md) — what App Orchestrator is and how it compares.
+- [README](../README.md) — what Karvon is and how it compares.
 - [CONTRIBUTING](../CONTRIBUTING.md) — local setup, fork checklist, PR conventions.
 - [SECURITY](../SECURITY.md) — threat model and vulnerability disclosure.
-- [Releases](https://github.com/blaze-uz/app-orchestrator/releases) — download
+- [Releases](https://github.com/blaze-uz/karvon/releases) — download
   the latest `.dmg`.
 
 ## Concepts at a glance

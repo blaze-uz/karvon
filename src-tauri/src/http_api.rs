@@ -338,7 +338,7 @@ fn trim_activity(config: &mut AppConfig) {
 async fn health_handler() -> Json<Value> {
     Json(json!({
         "ok": true,
-        "name": "app-orchestrator",
+        "name": "karvon",
         "version": env!("CARGO_PKG_VERSION"),
     }))
 }

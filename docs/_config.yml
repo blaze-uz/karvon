@@ -1,10 +1,10 @@
-title: App Orchestrator
+title: Karvon
 description: >
   macOS desktop control panel for orchestrating local + remote dev processes,
   deploy pipelines, and SSH-driven multi-machine workflows.
 url: https://blaze-uz.github.io
-baseurl: /app-orchestrator
-repository: blaze-uz/app-orchestrator
+baseurl: /karvon
+repository: blaze-uz/karvon
 theme: jekyll-theme-cayman
 
 # SEO
@@ -13,7 +13,7 @@ twitter:
 social:
   name: Blaze Uz
   links:
-    - https://github.com/blaze-uz/app-orchestrator
+    - https://github.com/blaze-uz/karvon
 
 plugins:
   - jekyll-seo-tag

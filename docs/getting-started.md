@@ -6,19 +6,19 @@ five minutes.
 ## 1. Install
 
 Either download a pre-built `.dmg` from
-[Releases](https://github.com/blaze-uz/app-orchestrator/releases) and drag the
+[Releases](https://github.com/blaze-uz/karvon/releases) and drag the
 app to `/Applications`, or build from source:
 
 ```bash
-git clone https://github.com/blaze-uz/app-orchestrator.git
-cd app-orchestrator
+git clone https://github.com/blaze-uz/karvon.git
+cd karvon
 npm install
 npm run desktop:install
 ```
 
 Requirements: macOS 12+, Node LTS, Rust stable, Xcode Command Line Tools.
 
-Open `App Orchestrator.app`. You'll land on the empty Dashboard.
+Open `Karvon.app`. You'll land on the empty Dashboard.
 
 ## 2. Add a project
 

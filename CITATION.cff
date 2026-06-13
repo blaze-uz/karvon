@@ -1,11 +1,11 @@
 cff-version: 1.2.0
-title: App Orchestrator
+title: Karvon
 message: "If you use this software, please cite it using these metadata."
 type: software
 authors:
   - name: "Blaze Uz and contributors"
-url: "https://github.com/blaze-uz/app-orchestrator"
-repository-code: "https://github.com/blaze-uz/app-orchestrator"
+url: "https://github.com/blaze-uz/karvon"
+repository-code: "https://github.com/blaze-uz/karvon"
 license: MIT
 keywords:
   - macos
@@ -16,6 +16,6 @@ keywords:
   - ssh
   - deployment
 abstract: >
-  App Orchestrator is a macOS desktop control panel that supervises local and
+  Karvon is a macOS desktop control panel that supervises local and
   remote development processes, runs multi-stage deploy pipelines (including
   over SSH), and exposes an optional HTTP API for scripting.

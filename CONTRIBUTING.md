@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for your interest in App Orchestrator. This document covers local setup,
+Thanks for your interest in Karvon. This document covers local setup,
 the dev loop, and what to change if you fork the project to ship your own builds.
 
 ## Local setup
@@ -43,7 +43,7 @@ npm run desktop:build      # produces a signed .app + .dmg in src-tauri/target/r
 npm run desktop:install    # copies the .app to /Applications and reopens it
 ```
 
-`desktop:build` looks for a minisign signing key at `~/.tauri/app-orchestrator.key`.
+`desktop:build` looks for a minisign signing key at `~/.tauri/karvon.key`.
 If the file is absent, the build silently skips the updater tarball so the .app
 and .dmg still produce.
 
@@ -53,7 +53,7 @@ If you publish your own builds, change these before tagging a release:
 
 1. **Bundle identifier** — `src-tauri/tauri.conf.json` (`identifier`) and
    `scripts/desktop-install.mjs` (`bundleIdentifier`). Pick a reverse-DNS name
-   you control (e.g. `com.example.app-orchestrator`).
+   you control (e.g. `com.example.karvon`).
 2. **Updater public key** — generate a new minisign keypair, replace the
    `plugins.updater.pubkey` field in `tauri.conf.json` with your public key
    (base64), and keep the private key secret.

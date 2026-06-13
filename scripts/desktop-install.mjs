@@ -2,10 +2,10 @@ import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 
-const appName = "App Orchestrator.app";
-const legacyAppName = "Local Project Orchestrator.app";
-const bundleIdentifier = "uz.blaze.app-orchestrator";
-const legacyBundleIdentifier = "dev.local-project-orchestrator.app";
+const appName = "Karvon.app";
+const legacyAppName = "App Orchestrator.app";
+const bundleIdentifier = "uz.blaze.karvon";
+const legacyBundleIdentifier = "uz.blaze.app-orchestrator";
 const builtAppPath = join(process.cwd(), "src-tauri", "target", "release", "bundle", "macos", appName);
 const installedAppPath = join("/Applications", appName);
 const legacyInstalledAppPath = join("/Applications", legacyAppName);
@@ -23,7 +23,7 @@ function sleep(ms) {
 }
 
 function isInstalledAppRunning() {
-  const result = spawnSync("pgrep", ["-f", `${appName}/Contents/MacOS/app-orchestrator|${legacyAppName}/Contents/MacOS/local-project-orchestrator`], {
+  const result = spawnSync("pgrep", ["-f", `${appName}/Contents/MacOS/karvon|${legacyAppName}/Contents/MacOS/app-orchestrator`], {
     stdio: "ignore"
   });
   return result.status === 0;
@@ -59,7 +59,7 @@ run("osascript", ["-e", `tell application id "${legacyBundleIdentifier}" to quit
   quiet: true
 });
 if (!(await waitForInstalledAppToQuit())) {
-  console.error("App Orchestrator is still running. Quit it and rerun `npm run desktop:install`.");
+  console.error("Karvon is still running. Quit it and rerun `npm run desktop:install`.");
   process.exit(1);
 }
 

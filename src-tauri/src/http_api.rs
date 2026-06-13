@@ -1,5 +1,4 @@
 use crate::deploy;
-use crate::mediaguard_preset;
 use crate::models::{
     ActivityType, ApiError, ApiResponse, AppConfig, AppSettings, DeployHistoryEntry, DeployScript,
     DeployScriptFormInput, FrontendErrorRecord, Id, LogHistoryFilters, Machine, MachineFormInput,
@@ -26,7 +25,7 @@ use std::net::SocketAddr;
 use std::path::Path as StdPath;
 use std::sync::Arc;
 use tauri::AppHandle;
-use tower_http::cors::CorsLayer;
+use tower_http::cors::{Any, CorsLayer};
 
 #[derive(Clone)]
 struct HttpApiState {
@@ -76,9 +75,10 @@ async fn run_server(app: AppHandle, state: AppState) -> Result<(), String> {
         .await
         .map_err(|e| format!("bind {addr}: {e}"))?;
 
+    let token_prefix: String = token.chars().take(6).collect();
     println!(
-        "[http-api] listening on {}:{}, token: {}",
-        host, port, token
+        "[http-api] listening on {}:{} (token: {}…)",
+        host, port, token_prefix
     );
 
     axum::serve(listener, router)
@@ -121,10 +121,6 @@ fn build_router(state: HttpApiState) -> Router {
         .route("/api/v1/config/import", post(import_config_handler))
         .route("/api/v1/config/export", get(export_config_handler))
         .route("/api/v1/settings", put(update_settings_handler))
-        .route(
-            "/api/v1/presets/media-guard",
-            post(apply_media_guard_preset_handler),
-        )
         // ---- workspaces ----
         .route("/api/v1/workspaces", get(list_workspaces_handler))
         .route("/api/v1/workspaces", post(create_workspace_handler))
@@ -256,7 +252,15 @@ fn build_router(state: HttpApiState) -> Router {
         ))
         .with_state(state);
 
-    public.merge(protected).layer(CorsLayer::permissive())
+    // CORS: allow any origin to read but do NOT echo Access-Control-Allow-Credentials.
+    // Browsers will refuse to send the Authorization header from a cross-origin page
+    // without credentials mode, so this is read-only-from-browser by design while
+    // staying friendly to CLI clients (curl, scripts) that ignore CORS entirely.
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any);
+    public.merge(protected).layer(cors)
 }
 
 async fn auth_middleware(
@@ -431,35 +435,6 @@ async fn update_settings_handler(
         return into_response(ApiResponse::<AppSettings>::err(err));
     }
     into_response(ApiResponse::ok(settings))
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct MediaGuardPresetBody {
-    base_path: Option<String>,
-}
-
-async fn apply_media_guard_preset_handler(
-    AxumState(s): AxumState<HttpApiState>,
-    Json(body): Json<MediaGuardPresetBody>,
-) -> Response {
-    let mut config = s.state.config.write().await;
-    mediaguard_preset::apply(&mut config, body.base_path);
-    config.activity.insert(
-        0,
-        storage::activity(
-            ActivityType::ConfigImported,
-            "MediaGuard preset applied via HTTP API",
-            "info",
-            None,
-            None,
-        ),
-    );
-    trim_activity(&mut config);
-    if let Err(err) = persist_config(&s.app, &config).await {
-        return into_response(ApiResponse::<AppConfig>::err(err));
-    }
-    into_response(ApiResponse::ok(config.clone()))
 }
 
 // ===== workspaces =====

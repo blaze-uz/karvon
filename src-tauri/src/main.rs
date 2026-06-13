@@ -3,7 +3,6 @@ mod commands;
 mod deploy;
 mod health;
 mod http_api;
-mod mediaguard_preset;
 mod models;
 mod process_manager;
 mod ssh_executor;
@@ -64,25 +63,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
-            let mut config = storage::load_config(app.handle());
-            run_startup_step("apply_mediaguard_preset_if_requested", || {
-                if let Ok(dir) = app.handle().path().app_config_dir() {
-                    let sentinel = dir.join(".apply-mediaguard-preset");
-                    if sentinel.exists() {
-                        let base_path = std::fs::read_to_string(&sentinel)
-                            .ok()
-                            .map(|s| s.trim().to_string())
-                            .filter(|s| !s.is_empty());
-                        mediaguard_preset::apply(&mut config, base_path);
-                        if let Err(err) = storage::save_config(app.handle(), &config) {
-                            eprintln!("[setup] save after preset apply failed: {}", err.message);
-                        }
-                        if let Err(err) = std::fs::remove_file(&sentinel) {
-                            eprintln!("[setup] remove sentinel failed: {err}");
-                        }
-                    }
-                }
-            });
+            let config = storage::load_config(app.handle());
             let recent_logs =
                 storage::load_recent_logs(app.handle(), process_manager::log_history_since());
             let _ = storage::prune_log_history(app.handle(), process_manager::log_history_since());
@@ -162,7 +143,6 @@ pub fn run() {
             commands::validate_project_path,
             commands::detect_ports_in_use,
             commands::update_settings,
-            commands::apply_media_guard_preset,
             commands::import_config,
             commands::export_config,
             commands::export_config_to_path,

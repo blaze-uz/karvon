@@ -71,15 +71,15 @@ const defaultSettings: AppSettings = {
 };
 
 const demoProject: Project = {
-  id: "project_mediaguard",
+  id: "project_demo",
   workspaceId: defaultWorkspace.id,
-  name: "MediaGuard Local",
-  slug: "mediaguard-local",
+  name: "Demo Project",
+  slug: "demo-project",
   description: "Demo multi-process workspace",
-  rootPath: "/Users/demo/Herd/mediaguard",
+  rootPath: "/Users/demo/projects/demo",
   icon: "Shield",
   color: "#32d583",
-  tags: ["laravel", "collector", "queue"],
+  tags: ["api", "worker", "collector"],
   autoStart: true,
   startupOrder: 1,
   memoryLimitMb: 2048,
@@ -134,12 +134,12 @@ const demoProcesses: ProcessDefinition[] = [
   {
     id: "process_collector",
     projectId: demoProject.id,
-    name: "Telegram Collector",
-    key: "telegram_collector",
+    name: "Background Worker",
+    key: "background_worker",
     command: "node",
-    args: ["workers/telegram.js"],
+    args: ["workers/background.js"],
     workingDirectory: demoProject.rootPath,
-    env: { NODE_ENV: "development", TELEGRAM_TOKEN: "redacted" },
+    env: { NODE_ENV: "development" },
     memoryLimitMb: 768,
     autoStart: false,
     restartPolicy: { kind: "limited-retries", maxRetries: 2, retryDelayMs: 3000 },
@@ -638,11 +638,6 @@ class MockApi {
   updateSettings(settings: AppSettings) {
     this.config.settings = settings;
     return Promise.resolve(this.ok(settings));
-  }
-
-  applyMediaGuardPreset(_basePath?: string) {
-    this.config.activity.unshift(activity("config_imported", "MediaGuard project preset synced"));
-    return Promise.resolve(this.ok(this.config));
   }
 
   importConfig(config: AppConfig) {

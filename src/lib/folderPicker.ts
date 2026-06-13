@@ -18,6 +18,6 @@ export async function selectFolder(currentPath?: string, options: SelectFolderOp
     return typeof selected === "string" ? selected : undefined;
   }
 
-  const fallback = window.prompt(options.prompt ?? "Project folder path", currentPath || options.fallbackPath || "/Users/milliykontent/Herd/");
+  const fallback = window.prompt(options.prompt ?? "Project folder path", currentPath || options.fallbackPath || "~/Projects/");
   return fallback?.trim() || undefined;
 }

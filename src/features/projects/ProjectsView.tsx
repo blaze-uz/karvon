@@ -74,7 +74,7 @@ export function ProjectsView() {
           <div className="form-grid">
             <label>
               Name<span className="required-marker" aria-hidden="true">*</span>
-              <input required value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder="MediaGuard" />
+              <input required value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder="My App" />
             </label>
             <label>
               Root path<span className="required-marker" aria-hidden="true">*</span>

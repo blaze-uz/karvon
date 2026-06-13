@@ -416,7 +416,7 @@ pub struct LogEntry {
 }
 
 pub fn default_http_api_enabled() -> bool {
-    true
+    false
 }
 
 pub fn default_http_api_port() -> u16 {
@@ -424,7 +424,7 @@ pub fn default_http_api_port() -> u16 {
 }
 
 pub fn default_http_api_bind_host() -> String {
-    "0.0.0.0".to_string()
+    "127.0.0.1".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

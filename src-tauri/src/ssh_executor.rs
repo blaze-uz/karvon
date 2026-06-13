@@ -98,10 +98,17 @@ pub async fn run_remote_command(
 }
 
 pub async fn kill_remote_process(machine: &Machine, remote_pid: u32, signal: &str) -> Result<(), String> {
+    // Allowlist to prevent shell injection through the signal argument: it is
+    // interpolated into a remote shell command, so an attacker-controlled value
+    // could otherwise break out of the `kill -…` form.
+    let safe_signal = match signal {
+        "TERM" | "KILL" | "INT" | "HUP" | "QUIT" | "USR1" | "USR2" | "STOP" | "CONT" => signal,
+        other => return Err(format!("disallowed signal: {other}")),
+    };
     let mut command = Command::new("ssh");
     apply_common_options(&mut command, machine);
     command.arg(format!("{}@{}", machine.ssh_user, machine.hostname));
-    command.arg(format!("kill -{signal} {remote_pid} 2>/dev/null || true"));
+    command.arg(format!("kill -{safe_signal} {remote_pid} 2>/dev/null || true"));
     command.stdout(Stdio::null()).stderr(Stdio::piped()).stdin(Stdio::null());
     match tokio::time::timeout(Duration::from_secs(10), command.status()).await {
         Ok(Ok(_)) => Ok(()),

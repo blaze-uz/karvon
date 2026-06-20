@@ -25,7 +25,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 axum = "0.7"
 tower = "0.4"
 tower-http = { version = "0.6", features = ["cors"] }
-rand = "0.8"
+rand = "0.9"
 
 # POSIX process-group + rlimit syscalls. Unix-only — the Windows process
 # supervision path (see src/platform/windows.rs) uses creation flags + taskkill

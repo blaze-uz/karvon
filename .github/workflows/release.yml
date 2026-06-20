@@ -53,14 +53,13 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: v__VERSION__
-          releaseName: Local Project Orchestrator v__VERSION__
+          releaseName: Karvon v__VERSION__
           releaseBody: "macOS desktop release with signed updater artifacts."
           releaseDraft: false
           prerelease: false
           tauriScript: npm run tauri
           args: ${{ matrix.args }}
-          uploadUpdaterJson: true
-          uploadUpdaterSignatures: true
+          includeUpdaterJson: true
 
   publish-windows:
     name: Publish Windows ${{ matrix.target }}
@@ -101,11 +100,11 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: v__VERSION__
-          releaseName: Local Project Orchestrator v__VERSION__
+          releaseName: Karvon v__VERSION__
           releaseBody: "Windows desktop release (NSIS installer) with signed updater artifacts."
           releaseDraft: false
           prerelease: false
           tauriScript: npm run tauri
           args: ${{ matrix.args }}
-          uploadUpdaterJson: true
-          uploadUpdaterSignatures: true
+          includeUpdaterJson: true
+          updaterJsonPreferNsis: true

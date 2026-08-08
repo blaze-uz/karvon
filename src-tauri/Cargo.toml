@@ -31,4 +31,4 @@ rand = "0.8"
 # supervision path (see src/platform/windows.rs) uses creation flags + taskkill
 # instead, so `nix` must not be pulled in for the Windows target.
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.29", features = ["process", "resource", "signal"] }
+nix = { version = "0.31", features = ["process", "resource", "signal"] }

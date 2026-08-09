@@ -8,7 +8,6 @@ Stop juggling 12 terminal tabs. Manage your APIs, queues, schedulers, collectors
 and deploy pipelines from one window. Runs natively on **macOS and Windows**, and
 treats remote hosts as if they were local.
 
-[![CI](https://github.com/blaze-uz/karvon/actions/workflows/ci.yml/badge.svg)](https://github.com/blaze-uz/karvon/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/blaze-uz/karvon?include_prereleases&sort=semver)](https://github.com/blaze-uz/karvon/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-lightgrey)](https://github.com/blaze-uz/karvon/releases)

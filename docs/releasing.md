@@ -78,9 +78,22 @@ Developer Program membership.
 base64 -i DeveloperID.p12 | gh secret set APPLE_CERTIFICATE --repo blaze-uz/karvon
 ```
 
-The workflow reads all six as environment variables and passes them straight to
-Tauri. Leave them unset and the build behaves exactly as it did before — nothing
-in the workflow branches on their presence.
+The macOS job has **two build steps**, selected by whether `APPLE_CERTIFICATE` is
+set. Leave the secrets unset and the ad-hoc step runs, exactly as before.
+
+They cannot be a single step with the Apple values left empty. An undefined
+GitHub secret interpolates to the empty string, but the `env:` key is still
+created — and Tauri decides to code-sign on the variable being *present*, not on
+it being non-empty. An empty `APPLE_CERTIFICATE` sends the bundler down the
+signing path with nothing to import, and the build dies with:
+
+```
+failed codesign application: failed to run command security import:
+failed to import keychain certificate
+```
+
+If you edit these steps, keep the two `with:` blocks identical apart from
+`releaseBody`.
 
 ## Adding a platform to an existing release
 

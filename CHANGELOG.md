@@ -13,7 +13,8 @@ All notable changes to Karvon are documented here. The format is based on
   machine. It runs on tags only — never on a branch push or a pull request. See
   [docs/releasing.md](docs/releasing.md).
 - Optional Apple Developer ID signing and notarization, wired into the same
-  workflow. With the secrets unset the bundle is ad-hoc signed exactly as every
+  workflow as a second build step selected by whether the certificate secret is
+  set. With the secrets unset the bundle is ad-hoc signed exactly as every
   release through 0.3.0 was; set them and the DMG opens by double-click instead
   of requiring right-click → *Open*.
 

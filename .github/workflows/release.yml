@@ -49,7 +49,42 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build and upload Tauri bundles
+      # Two build steps, differing only in whether the APPLE_* variables exist.
+      #
+      # They cannot be one step with the Apple values left empty. An undefined
+      # GitHub secret interpolates to the empty string, but the `env:` key is
+      # still created — and Tauri decides to code-sign on the variable being
+      # *present*, not on it being non-empty. An empty APPLE_CERTIFICATE
+      # therefore sends it down the signing path with nothing to import, and the
+      # bundle step dies with "failed to import keychain certificate".
+      #
+      # Keep the two `with:` blocks identical apart from releaseBody.
+
+      - name: Build and upload Tauri bundles (Developer ID signed)
+        if: ${{ secrets.APPLE_CERTIFICATE != '' }}
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          tagName: v__VERSION__
+          releaseName: Karvon v__VERSION__
+          releaseBody: "macOS desktop release, Developer ID signed and notarized, with signed updater artifacts."
+          releaseDraft: false
+          prerelease: false
+          tauriScript: npm run tauri
+          args: ${{ matrix.args }}
+          includeUpdaterJson: true
+
+      - name: Build and upload Tauri bundles (ad-hoc signed)
+        if: ${{ secrets.APPLE_CERTIFICATE == '' }}
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -59,17 +94,6 @@ jobs:
           # so treat a missing secret as a broken release, not a soft warning.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-
-          # Apple Developer ID signing + notarization. Entirely optional: with
-          # these unset the bundle is ad-hoc signed exactly as before, and
-          # Gatekeeper asks the user to right-click → Open. Set them and the DMG
-          # opens by double-click like any other app.
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           tagName: v__VERSION__
           releaseName: Karvon v__VERSION__

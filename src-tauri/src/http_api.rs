@@ -136,6 +136,8 @@ fn build_router(state: HttpApiState) -> Router {
             post(test_machine_connection_handler),
         )
         // ---- projects ----
+        .route("/api/v1/presets", get(list_presets_handler))
+        .route("/api/v1/projects/:id/presets/:preset_id", post(apply_preset_handler))
         .route("/api/v1/projects", get(list_projects))
         .route("/api/v1/projects", post(create_project_handler))
         .route("/api/v1/projects/:id", get(get_project))
@@ -661,6 +663,20 @@ async fn test_machine_connection_handler(
     }
     let result = crate::ssh_executor::test_connection(&machine).await;
     into_response(ApiResponse::ok(result))
+}
+
+// ===== presets =====
+
+async fn list_presets_handler(AxumState(s): AxumState<HttpApiState>) -> Response {
+    into_response(crate::commands::list_presets(s.app.clone()).await)
+}
+
+async fn apply_preset_handler(
+    AxumState(s): AxumState<HttpApiState>,
+    Path((project_id, preset_id)): Path<(Id, String)>,
+    Json(variables): Json<std::collections::HashMap<String, String>>,
+) -> Response {
+    into_response(crate::commands::apply_preset(s.app.clone(), preset_id, project_id, variables).await)
 }
 
 // ===== projects =====

@@ -403,3 +403,59 @@ export interface DeployHistoryEntry {
   trigger?: string;
   logs: LogEntry[];
 }
+
+// --- Presets -----------------------------------------------------------------
+
+/** A declared substitution point in a preset (`{{key}}` in the body). */
+export interface PresetVariable {
+  key: string;
+  label?: string;
+  description?: string;
+  /** Prefilled value. A variable with no default is required. */
+  default?: string;
+}
+
+/** One process in a preset — the process form minus the ids Karvon assigns. */
+export interface PresetProcess {
+  name: string;
+  key: string;
+  command: string;
+  args?: string[];
+  workingDirectory?: string;
+  env?: Record<string, string>;
+  memoryLimitMb?: number;
+  autoStart?: boolean;
+  restartPolicy?: RestartPolicy;
+  startupDelayMs?: number;
+  dependsOn?: string[];
+  healthCheck?: HealthCheck;
+  logMode?: LogMode;
+  group?: string;
+  visible?: boolean;
+}
+
+export interface Preset {
+  id: string;
+  /** Absolute path of the file this came from. */
+  source: string;
+  name: string;
+  description?: string;
+  version?: string;
+  author?: string;
+  tags?: string[];
+  variables?: PresetVariable[];
+  processes: PresetProcess[];
+}
+
+export interface PresetLoadError {
+  source: string;
+  message: string;
+}
+
+export interface PresetCatalog {
+  presets: Preset[];
+  /** Files that failed to load, so one bad file is visible rather than missing. */
+  errors: PresetLoadError[];
+  /** The directory scanned — show it so the user knows where to put files. */
+  directory: string;
+}

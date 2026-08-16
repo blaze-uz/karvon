@@ -6,7 +6,7 @@ use crate::{
         MachineConnectionResult, MachineFormInput, MetricSample, ProcessDefinition,
         ProcessFormInput, Project, ProjectFormInput, ValidationResult, Workspace,
     },
-    platform, process_manager,
+    platform, presets, process_manager,
     state::{app_state, AppState},
     storage,
 };
@@ -1242,4 +1242,187 @@ pub async fn get_deploy_history_entry(
         .into_iter()
         .find(|entry| entry.run_id == run_id);
     ApiResponse::ok(entry)
+}
+
+// ---------------------------------------------------------------------------
+// Presets
+// ---------------------------------------------------------------------------
+
+/// Absolute path of the presets directory, created on demand so the UI can tell
+/// the user exactly where to drop a file.
+fn presets_directory(app: &AppHandle) -> Result<std::path::PathBuf, ApiError> {
+    use tauri::Manager;
+
+    let dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| {
+            ApiError::new(
+                "PRESETS_DIR_UNAVAILABLE",
+                &format!("Could not resolve the app config directory: {error}"),
+                false,
+            )
+        })?
+        .join(presets::PRESETS_DIR);
+
+    if let Err(error) = std::fs::create_dir_all(&dir) {
+        return Err(ApiError::new(
+            "PRESETS_DIR_UNAVAILABLE",
+            &format!("Could not create {}: {error}", dir.display()),
+            false,
+        ));
+    }
+
+    Ok(dir)
+}
+
+#[tauri::command]
+pub async fn list_presets(app: AppHandle) -> ApiResponse<presets::PresetCatalog> {
+    match presets_directory(&app) {
+        Ok(dir) => ApiResponse::ok(presets::load_catalog(&dir)),
+        Err(error) => ApiResponse::err(error),
+    }
+}
+
+/// Add every process from a preset to an existing project.
+///
+/// Applying is all-or-nothing: the whole preset is validated against the project
+/// first, so a preset whose third process collides with an existing key does not
+/// leave the first two behind for the user to clean up by hand.
+#[tauri::command]
+pub async fn apply_preset(
+    app: AppHandle,
+    preset_id: String,
+    project_id: Id,
+    variables: std::collections::HashMap<String, String>,
+) -> ApiResponse<Vec<ProcessDefinition>> {
+    let dir = match presets_directory(&app) {
+        Ok(dir) => dir,
+        Err(error) => return ApiResponse::err(error),
+    };
+
+    let catalog = presets::load_catalog(&dir);
+    let Some(loaded) = catalog.presets.into_iter().find(|p| p.id == preset_id) else {
+        return ApiResponse::err(ApiError::new(
+            "PRESET_NOT_FOUND",
+            &format!("No preset with id \"{preset_id}\" in {}", dir.display()),
+            false,
+        ));
+    };
+
+    let state = app_state();
+
+    let (project_exists, machine_id) = {
+        let config = state.config.read().await;
+        match config.projects.iter().find(|p| p.id == project_id) {
+            Some(project) => (true, project.machine_id.clone()),
+            None => (false, None),
+        }
+    };
+
+    if !project_exists {
+        return ApiResponse::err(ApiError::new(
+            "PROJECT_NOT_FOUND",
+            &format!("No project with id \"{project_id}\""),
+            false,
+        ));
+    }
+
+    let inputs = match presets::instantiate(&loaded.preset, &project_id, machine_id, &variables) {
+        Ok(inputs) => inputs,
+        Err(error) => return ApiResponse::err(error),
+    };
+
+    // Validate the whole batch before writing any of it.
+    let mut errors: Vec<String> = Vec::new();
+    for input in &inputs {
+        let validation = validate_process_definition(&state, None, input).await;
+        if !validation.valid {
+            errors.push(format!("{}: {}", input.key, validation.errors.join(", ")));
+        }
+    }
+
+    // Keys are unique within the preset (checked at load) but may still collide
+    // with what the project already has.
+    {
+        let config = state.config.read().await;
+        for input in &inputs {
+            if config
+                .processes
+                .iter()
+                .any(|p| p.project_id == project_id && p.key == input.key)
+            {
+                errors.push(format!(
+                    "{}: the project already has a process with this key",
+                    input.key
+                ));
+            }
+        }
+    }
+
+    if !errors.is_empty() {
+        return ApiResponse::err(ApiError::with_details(
+            "PRESET_NOT_APPLICABLE",
+            "Preset cannot be applied to this project",
+            errors.join("; "),
+            false,
+        ));
+    }
+
+    let now = Utc::now();
+    let created: Vec<ProcessDefinition> = inputs
+        .into_iter()
+        .map(|input| ProcessDefinition {
+            id: storage::id("process"),
+            project_id: input.project_id,
+            name: input.name,
+            key: input.key,
+            command: input.command,
+            args: input.args,
+            working_directory: input.working_directory,
+            env: input.env,
+            memory_limit_mb: input.memory_limit_mb,
+            auto_start: input.auto_start,
+            restart_policy: input.restart_policy,
+            startup_delay_ms: input.startup_delay_ms,
+            depends_on: input.depends_on,
+            health_check: input.health_check,
+            log_mode: input.log_mode,
+            group: input.group,
+            visible: input.visible,
+            machine_id: input.machine_id,
+            launchd: input.launchd,
+            created_at: now,
+            updated_at: now,
+        })
+        .collect();
+
+    let mut config = state.config.write().await;
+    let mut states = state.runtime.states.write().await;
+
+    for process in &created {
+        config.processes.push(process.clone());
+        states.insert(
+            process.id.clone(),
+            crate::models::ProcessRuntimeState::stopped(process.id.clone()),
+        );
+    }
+    drop(states);
+
+    config.activity.insert(
+        0,
+        storage::activity(
+            crate::models::ActivityType::ProcessCreated,
+            format!(
+                "Applied preset \"{}\" — {} process(es) added",
+                loaded.preset.name,
+                created.len()
+            ),
+            "info",
+            Some(project_id.clone()),
+            None,
+        ),
+    );
+
+    save_response(&app, &config, created)
 }

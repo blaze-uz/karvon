@@ -1,6 +1,6 @@
 [package]
 name = "karvon"
-version = "0.2.0"
+version = "0.3.0"
 description = "Cross-platform local & remote project orchestration panel (macOS + Windows)"
 authors = ["Karvon"]
 edition = "2021"

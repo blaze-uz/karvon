@@ -92,6 +92,11 @@ failed codesign application: failed to run command security import:
 failed to import keychain certificate
 ```
 
+The presence check itself lives in the job's `env:` as `APPLE_CERT_PRESENT`,
+because the `secrets` context is rejected in a step's `if:` — GitHub allows it
+only in `env:` and `with:`. The steps branch on that string. Only *whether* a
+certificate exists crosses into `if:`; the certificate never does.
+
 If you edit these steps, keep the two `with:` blocks identical apart from
 `releaseBody`.
 

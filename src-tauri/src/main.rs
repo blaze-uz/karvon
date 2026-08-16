@@ -5,6 +5,7 @@ mod health;
 mod http_api;
 mod models;
 mod platform;
+mod presets;
 mod process_manager;
 mod ssh_executor;
 mod state;
@@ -117,6 +118,8 @@ pub fn run() {
             commands::update_process_definition,
             commands::delete_process_definition,
             commands::list_processes_by_project,
+            commands::list_presets,
+            commands::apply_preset,
             commands::start_process,
             commands::stop_process,
             commands::restart_process,

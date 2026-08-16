@@ -36,6 +36,7 @@ Karvon gives you **one panel** that:
 - Streams stdout/stderr with virtualized rendering — millions of log lines stay snappy
 - Runs **TCP / HTTP / custom-command** health checks and auto-restarts failing processes
 - Drives **multi-stage deploy pipelines** — same UI for local builds and remote SSH deploys
+- Applies **presets** — reusable process bundles from `presets/*.json`, so the next Laravel/Rails project is one call instead of five forms
 - Polls `git` and **auto-deploys** when the remote branch advances
 - Treats remote hosts as first-class targets — register them, route projects to them, deploy without leaving the app
 
@@ -177,7 +178,7 @@ curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8765/api/v1/dashboard
 
 ## Roadmap
 
-- [ ] Generic preset framework (load project bundles from the app config dir's `presets/*.json`)
+- [x] Generic preset framework — ✅ shipped (`presets/*.json`, see [docs/presets.md](docs/presets.md))
 - [x] Windows builds — ✅ shipped (NSIS installer)
 - [ ] Linux builds
 - [ ] Job Object-based memory limits & atomic tree-kill on Windows (today: `taskkill /T`, no hard memory cap — see [docs/troubleshooting.md](docs/troubleshooting.md))

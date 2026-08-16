@@ -19,6 +19,7 @@ import type {
   MachineFormInput,
   MetricSample,
   ProcessDefinition,
+  PresetCatalog,
   ProcessFormInput,
   ProcessRuntimeState,
   Project,
@@ -68,6 +69,9 @@ export const api = {
   deleteProject: (projectId: ID) => command<boolean>("delete_project", { projectId }),
   getProjectDetail: (projectId: ID) => command<ProjectDetail>("get_project_detail", { projectId }),
   listProcessesByProject: (projectId: ID) => command<ProcessDefinition[]>("list_processes_by_project", { projectId }),
+  listPresets: () => command<PresetCatalog>("list_presets"),
+  applyPreset: (presetId: string, projectId: ID, variables: Record<string, string> = {}) =>
+    command<ProcessDefinition[]>("apply_preset", { presetId, projectId, variables }),
   createProcessDefinition: (input: ProcessFormInput) => command<ProcessDefinition>("create_process_definition", { input }),
   updateProcessDefinition: (process: ProcessDefinition) => command<ProcessDefinition>("update_process_definition", { process }),
   deleteProcessDefinition: (processId: ID) => command<boolean>("delete_process_definition", { processId }),

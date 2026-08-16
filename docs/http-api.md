@@ -83,7 +83,17 @@ All endpoints are versioned under `/api/v1`.
 | `DELETE` | `/api/v1/machines/:id` |
 | `POST` | `/api/v1/machines/:id/test` |
 
-### Projects
+### Presets
+
+| Method | Path | Body | Description |
+|---|---|---|---|
+| `GET` | `/api/v1/presets` | — | Loaded presets, per-file load errors, and the directory scanned |
+| `POST` | `/api/v1/projects/:id/presets/:presetId` | `{"var": "value"}` | Add every process in the preset to the project |
+
+Applying is all-or-nothing: the whole preset is validated against the project
+before anything is written. See [presets.md](presets.md) for the file format.
+
+## Projects
 
 | Method | Path | Purpose |
 |---|---|---|

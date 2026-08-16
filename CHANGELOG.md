@@ -6,6 +6,17 @@ All notable changes to Karvon are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- A tag-triggered release workflow that builds macOS (both arches) **and
+  Windows**, so a release stops depending on whoever cuts it having the right
+  machine. It runs on tags only — never on a branch push or a pull request. See
+  [docs/releasing.md](docs/releasing.md).
+- Optional Apple Developer ID signing and notarization, wired into the same
+  workflow. With the secrets unset the bundle is ad-hoc signed exactly as every
+  release through 0.3.0 was; set them and the DMG opens by double-click instead
+  of requiring right-click → *Open*.
+
 ## [0.3.0] — 2026-08-16
 
 ### Added

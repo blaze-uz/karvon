@@ -1,0 +1,129 @@
+name: Release Desktop App
+
+# Tags only. This is not CI: nothing here runs on a push to a branch or on a pull
+# request, so day-to-day work never waits on it. It exists because a Windows NSIS
+# installer cannot be cross-compiled from macOS, and a release without one strands
+# every Windows user on whatever version they already have.
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish-macos:
+    name: Publish macOS ${{ matrix.target }}
+    runs-on: macos-latest
+    env:
+      LANG: en_US.UTF-8
+      LC_ALL: en_US.UTF-8
+      LC_CTYPE: en_US.UTF-8
+    strategy:
+      fail-fast: false
+      # Serialize the two arches: tauri-action's latest.json upload is a
+      # non-atomic read-modify-write, so concurrent jobs would clobber each
+      # other's platform key. The Windows job additionally `needs:` this one.
+      max-parallel: 1
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            args: "--target aarch64-apple-darwin"
+          - target: x86_64-apple-darwin
+            args: "--target x86_64-apple-darwin"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "lts/*"
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build and upload Tauri bundles
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+          # Updater signature (minisign). Without these the build still succeeds
+          # but ships no .sig, and every installed client refuses the update —
+          # so treat a missing secret as a broken release, not a soft warning.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+          # Apple Developer ID signing + notarization. Entirely optional: with
+          # these unset the bundle is ad-hoc signed exactly as before, and
+          # Gatekeeper asks the user to right-click → Open. Set them and the DMG
+          # opens by double-click like any other app.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          tagName: v__VERSION__
+          releaseName: Karvon v__VERSION__
+          releaseBody: "macOS desktop release with signed updater artifacts."
+          releaseDraft: false
+          prerelease: false
+          tauriScript: npm run tauri
+          args: ${{ matrix.args }}
+          includeUpdaterJson: true
+
+  publish-windows:
+    name: Publish Windows ${{ matrix.target }}
+    runs-on: windows-latest
+    # Run after the macOS job so the two never write latest.json concurrently.
+    needs: publish-macos
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            args: "--target x86_64-pc-windows-msvc --bundles nsis"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "lts/*"
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Builds the NSIS installer only (.exe, updater-compatible) and merges the
+      # windows-x86_64 key into the shared latest.json on the same release tag as
+      # the macOS job. NSIS-only keeps the updater target unambiguous — building
+      # MSI too would put two installers behind one windows-x86_64 updater entry.
+      - name: Build and upload Tauri bundles
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: v__VERSION__
+          releaseName: Karvon v__VERSION__
+          releaseBody: "Windows desktop release (NSIS installer) with signed updater artifacts."
+          releaseDraft: false
+          prerelease: false
+          tauriScript: npm run tauri
+          args: ${{ matrix.args }}
+          includeUpdaterJson: true
+          updaterJsonPreferNsis: true

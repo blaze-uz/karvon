@@ -58,20 +58,30 @@ Built with **Tauri v2** (Rust + React), so it's a real native desktop app on
 
 ### Download a pre-built release
 
-**macOS** (Apple Silicon or Intel):
+Grab your file from the [Releases page](https://github.com/blaze-uz/karvon/releases/latest):
+
+| Platform | File |
+|---|---|
+| macOS, Apple Silicon | `Karvon_<version>_aarch64.dmg` |
+| macOS, Intel | `Karvon_<version>_x64.dmg` |
+| Windows 10/11 (x64) | `Karvon_<version>_x64-setup.exe` (NSIS) |
+
+Open the `.dmg` and drag Karvon into `/Applications`, or run the `.exe`.
+
+Asset names carry the version, so there is no fixed `latest/download/…` URL to
+curl. To script it, resolve the asset first:
 
 ```bash
-curl -L https://github.com/blaze-uz/karvon/releases/latest/download/Karvon_aarch64.dmg -o karvon.dmg
-open karvon.dmg   # drag to /Applications
+gh release download --repo blaze-uz/karvon --pattern '*aarch64.dmg' --dir .
 ```
 
-Or grab the `.dmg` from the [Releases page](https://github.com/blaze-uz/karvon/releases)
-and drag it into `/Applications`.
+#### macOS will refuse the first launch
 
-**Windows 10/11** (x64): download the `Karvon_x64-setup.exe` (NSIS) installer from
-the [Releases page](https://github.com/blaze-uz/karvon/releases) and run it.
+Karvon is not signed with an Apple Developer ID, so Gatekeeper blocks it and
+reports that the developer cannot be verified. It is not a broken download.
+**Right-click the app → Open**, then confirm once; macOS remembers the choice.
 
-The bundled updater handles future versions on both platforms.
+The bundled updater handles every version after that, on both platforms.
 
 ### Build from source
 

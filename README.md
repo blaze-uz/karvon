@@ -20,6 +20,16 @@ treats remote hosts as if they were local.
 
 </div>
 
+
+<p align="center">
+  <img src="docs/screenshots/01-status.png" alt="Karvon runtime status: three projects and six processes, all running, with PIDs and memory" width="900">
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/02-projects.png" alt="Karvon projects view: each project as a card with start, stop, restart and delete controls" width="440">
+  <img src="docs/screenshots/03-logs.png" alt="Karvon logs view: live tail across every process, filterable by project, process, stream and level" width="440">
+</p>
+
 ---
 
 ## Why Karvon?

@@ -24,7 +24,7 @@ tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt-
 uuid = { version = "1", features = ["v4", "serde"] }
 axum = "0.7"
 tower = "0.4"
-tower-http = { version = "0.6", features = ["cors"] }
+tower-http = { version = "0.7", features = ["cors"] }
 rand = "0.8"
 
 # POSIX process-group + rlimit syscalls. Unix-only — the Windows process
